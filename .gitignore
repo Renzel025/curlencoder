@@ -1,0 +1,14 @@
+# Secrets / real config — NEVER commit. Use encoder_monitor.env.example instead.
+encoder_monitor.env
+*.env
+!*.env.example
+
+# Data exports — contain UserSig / PrivateMapKey (sensitive TRTC creds)
+*.xlsx
+
+# Transient / generated
+*.b64
+*.log
+__pycache__/
+*.pyc
+.DS_Store
