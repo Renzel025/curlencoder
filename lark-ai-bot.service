@@ -1,0 +1,26 @@
+[Unit]
+# systemd service for the Lark AI bot (lark_ai_bot.py).
+# Install:
+#   sudo cp /opt/curlencoder/lark-ai-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lark-ai-bot
+# Watch logs:   journalctl -u lark-ai-bot -f
+Description=Lark AI Bot (long-connection, Groq/OpenAI-compatible)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/curlencoder
+# Source the (export-style) env, then exec the venv's python on the bot.
+# Using bash -c because systemd's EnvironmentFile= can't parse "export FOO=bar".
+ExecStart=/bin/bash -c 'set -a; . /opt/curlencoder/lark_ai_bot.env; set +a; exec /opt/curlencoder/botenv/bin/python /opt/curlencoder/lark_ai_bot.py'
+Restart=always
+RestartSec=5
+# logs go to the journal (journalctl -u lark-ai-bot)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lark-ai-bot
+
+[Install]
+WantedBy=multi-user.target
