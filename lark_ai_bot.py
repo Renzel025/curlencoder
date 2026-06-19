@@ -33,6 +33,7 @@ import os
 import re
 import sys
 import json
+import time
 import urllib.request
 import urllib.error
 from collections import OrderedDict
@@ -194,6 +195,11 @@ def tool_check_encoder(ip, outputs="0,1,2"):
         except Exception as e:
             streams.append({"output": out, "stream": label.get(out, "output %s" % out),
                             "error": str(e)})
+            # If we can't even reach the FIRST output, the box is down — stop here
+            # instead of waiting out the timeout on every remaining output.
+            if not reachable:
+                return {"ip": ip, "reachable": False,
+                        "error": "unreachable (%s)" % e, "streams": streams}
     return {"ip": ip, "reachable": reachable, "streams": streams}
 
 
@@ -224,12 +230,19 @@ def _llm_request(messages, tools=None):
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError("LLM API HTTP %s: %s" % (e.code, detail[:500]))
+    # Retry transient failures: 429 (rate limit, common on Groq's free tier) and
+    # 5xx. Linear backoff: 2s, 4s. Other errors raise immediately.
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
+                sys.stderr.write("[llm retry] HTTP %s, attempt %d\n" % (e.code, attempt + 1))
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError("LLM API HTTP %s: %s" % (e.code, detail[:500]))
 
 
 def llm_chat(messages):
