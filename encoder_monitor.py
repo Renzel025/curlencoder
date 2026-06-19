@@ -218,8 +218,8 @@ def _cell_text(cell):
     return str(cell)
 
 
-def lark_first_tab(token, sheet_token):
-    """Return the first tab's sheet_id (used when a sheet URL has no ?sheet=XXXX)."""
+def lark_resolve_tab(token, sheet_token, tab):
+    """Return (tab_id, tab_title). If tab is blank, use the spreadsheet's first tab."""
     url = "%s/open-apis/sheets/v3/spreadsheets/%s/sheets/query" % (LARK_DOMAIN, sheet_token)
     _, body = http_get(url, headers={"Authorization": "Bearer " + token})
     data = json.loads(body)
@@ -228,7 +228,13 @@ def lark_first_tab(token, sheet_token):
     sheets = data.get("data", {}).get("sheets", [])
     if not sheets:
         raise RuntimeError("Spreadsheet %s has no tabs" % sheet_token)
-    return sheets[0]["sheet_id"]
+    if tab:
+        for s in sheets:
+            if s.get("sheet_id") == tab:
+                return tab, s.get("title", tab)
+        return tab, tab          # id given but not found in metadata — use it anyway
+    first = sheets[0]
+    return first["sheet_id"], first.get("title", first["sheet_id"])
 
 
 def lark_read_grid(token, sheet_token, tab, rng):
@@ -360,15 +366,24 @@ def _split_token_tab(s):
 
 
 def parse_sheets():
-    """Parse LARK_SHEETS into [(name, token, tab)]; falls back to the single-sheet env."""
+    """Parse LARK_SHEETS into [(name, token, tab)]; falls back to the single-sheet env.
+
+    Entries are separated by comma or newline (NOT spaces, so names may contain
+    spaces). Each entry is:  <name>=<token>@<tab>  (name + @tab optional; the
+    token half may also be a ?sheet= form or a full Lark URL).
+    """
     entries = []
-    for e in LARK_SHEETS.replace(",", " ").split():
+    for e in LARK_SHEETS.replace("\n", ",").split(","):
+        e = e.strip()
+        if not e:
+            continue
         name = ""
-        # optional "name=" prefix (short identifier, not part of a URL/token)
         if "=" in e:
             left, right = e.split("=", 1)
-            if re.match(r"^[A-Za-z0-9_-]{1,20}$", left):
-                name, e = left, right
+            left = left.strip()
+            # a name is any short-ish label without URL/token punctuation
+            if left and not any(c in left for c in "/?@") and len(left) <= 40:
+                name, e = left, right.strip()
         token, tab = _split_token_tab(e)
         if token:
             entries.append((name or token[:8], token, tab))
@@ -382,8 +397,7 @@ def process_sheet(token, name, sheet_token, tab):
 
     Returns a stats dict {name, total, ok, unreachable[], no_trtc[]}.
     """
-    if not tab:
-        tab = lark_first_tab(token, sheet_token)   # URL had no ?sheet= -> first tab
+    tab, tab_title = lark_resolve_tab(token, sheet_token, tab)   # also gets the tab's display name
     blocks = read_template_blocks(token, sheet_token, tab)
     outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
 
@@ -414,9 +428,9 @@ def process_sheet(token, name, sheet_token, tab):
         value_ranges.extend(build_value_ranges(block, streams, tab))
 
     lark_batch_write(token, sheet_token, value_ranges)
-    print("[%s] filled %d/%d (%d unreachable, %d no-TRTC)"
-          % (name, ok, len(blocks), len(unreachable), len(no_trtc)))
-    return {"name": name, "total": len(blocks), "ok": ok,
+    print("[%s / %s] filled %d/%d (%d unreachable, %d no-TRTC)"
+          % (name, tab_title, ok, len(blocks), len(unreachable), len(no_trtc)))
+    return {"name": name, "tab": tab_title, "total": len(blocks), "ok": ok,
             "unreachable": unreachable, "no_trtc": no_trtc}
 
 
@@ -435,7 +449,8 @@ def build_summary_card(now, results):
         if r.get("error"):
             content = "**%s** — ❌ %s" % (r["name"], r["error"])
         else:
-            lines = ["**%s** — filled **%d / %d**" % (r["name"], r["ok"], r["total"])]
+            tab = (" · sheet `%s`" % r["tab"]) if r.get("tab") else ""
+            lines = ["**%s**%s — filled **%d / %d**" % (r["name"], tab, r["ok"], r["total"])]
             if r["unreachable"]:
                 lines.append("🔴 Unreachable (%d): %s" % (len(r["unreachable"]), names(r["unreachable"])))
             if r["no_trtc"]:
