@@ -61,6 +61,7 @@ LARK_CHAT_ID     = os.environ.get("LARK_CHAT_ID", "")             # OTE group ch
 LARK_SHEET_TOKEN = os.environ.get("LARK_OUT_SHEET_TOKEN", "")     # spreadsheet token from the URL
 LARK_SHEET_TAB   = os.environ.get("LARK_OUT_SHEET_ID", "")        # tab id (the ?sheet=XXXX in the URL)
 # Column layout of the template (Baccarat.xlsx style). Change if your sheet differs.
+TPL_TABLE_COL    = os.environ.get("TPL_TABLE_COL", "A")           # column with the table/encoder name
 TPL_IP_COL       = os.environ.get("TPL_IP_COL", "B")              # column with each encoder's IP
 TPL_PARAM_COL    = os.environ.get("TPL_PARAM_COL", "D")           # column with RoomID/UserID/... labels
 TPL_STREAM_COLS  = os.environ.get("TPL_STREAM_COLS", "E,F,G")     # Mainstream, Substream 1, Substream 2
@@ -218,6 +219,7 @@ def read_template_blocks(token):
     rows below it belong to that block until the next IP appears.
     """
     grid = lark_read_grid(token, "A1:Z2000")
+    table_i = _col_to_idx(TPL_TABLE_COL)
     ip_i = _col_to_idx(TPL_IP_COL)
     param_i = _col_to_idx(TPL_PARAM_COL)
 
@@ -227,7 +229,8 @@ def read_template_blocks(token):
         ip_cell = _cell_text(row[ip_i]) if len(row) > ip_i else ""
         m = IPV4_RE.search(ip_cell)
         if m:
-            current = {"ip": m.group(0), "rows": {}}
+            table = _cell_text(row[table_i]).strip() if len(row) > table_i else ""
+            current = {"table": table, "ip": m.group(0), "rows": {}}
             blocks.append(current)
         if current is None:
             continue
@@ -271,17 +274,59 @@ def build_value_ranges(block, streams):
 
 
 def lark_send_message(token, text):
+    """Plain-text message (used as the failure fallback)."""
+    _lark_post_message(token, "text", {"text": text})
+
+
+def lark_send_card(token, card):
+    """Interactive card message (the run summary)."""
+    _lark_post_message(token, "interactive", card)
+
+
+def _lark_post_message(token, msg_type, content):
     url = "%s/open-apis/im/v1/messages?receive_id_type=chat_id" % LARK_DOMAIN
     payload = {
         "receive_id": LARK_CHAT_ID,
-        "msg_type": "text",
-        "content": json.dumps({"text": text}),
+        "msg_type": msg_type,
+        "content": json.dumps(content),
     }
     headers = {"Authorization": "Bearer " + token}
     _, body = http_post_json(url, payload, headers=headers)
     data = json.loads(body)
     if data.get("code") != 0:
         raise RuntimeError("Lark message failed: %s" % body)
+
+
+def build_summary_card(now, ok, total, unreachable, no_trtc):
+    """Build a Lark interactive card. unreachable/no_trtc are lists of (table, ip)."""
+    clean = not unreachable and not no_trtc
+    header_template = "green" if clean else "orange"
+    title = "✅ Encoder Monitor" if clean else "⚠️ Encoder Monitor"
+
+    body = ["**%d / %d** encoders filled into the Lark Sheet." % (ok, total),
+            "🕒 %s" % now]
+
+    def section(emoji, label, items):
+        lines = ["", "%s **%s (%d):**" % (emoji, label, len(items))]
+        for table, ip in items:
+            lines.append("- %s  `%s`" % (table or "(no name)", ip))
+        return "\n".join(lines)
+
+    if unreachable:
+        body.append(section("🔴", "Unreachable", unreachable))
+    if no_trtc:
+        body.append(section("⚪", "No TRTC config", no_trtc))
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": header_template,
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(body)}},
+        ],
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -303,10 +348,11 @@ def main():
         outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
         value_ranges = []
         ok = 0
-        unreachable = 0
-        no_trtc = 0
+        unreachable = []     # (table, ip) couldn't be curled
+        no_trtc = []         # (table, ip) reachable but no TRTC configured
         for block in blocks:
             ip = block["ip"]
+            who = (block.get("table", ""), ip)
             # one /get_output call per stream: output 0 -> Mainstream, 1 -> Sub1, ...
             streams = []
             reachable = True
@@ -315,14 +361,14 @@ def main():
                     streams.append(parse_output_config(fetch_output(ip, out)))
                 except Exception as e:
                     reachable = False
-                    sys.stderr.write("[%s output=%s] %s\n" % (ip, out, e))
+                    sys.stderr.write("[%s %s output=%s] %s\n" % (who[0], ip, out, e))
                     break
             if not reachable:
-                unreachable += 1
+                unreachable.append(who)
                 continue
             if not any(s.get("RoomID") for s in streams):
-                no_trtc += 1
-                sys.stderr.write("[%s] reachable but no TRTC config\n" % ip)
+                no_trtc.append(who)
+                sys.stderr.write("[%s %s] reachable but no TRTC config\n" % (who[0], ip))
                 continue
             ok += 1
             value_ranges.extend(build_value_ranges(block, streams))
@@ -330,16 +376,10 @@ def main():
         # write everything back to the sheet
         lark_batch_write(token, value_ranges)
 
-        icon = "✅" if (unreachable == 0 and no_trtc == 0) else "⚠️"
-        msg = ("%s Encoder monitor (%s)\n%d/%d encoders filled into the Lark Sheet."
-               % (icon, now, ok, len(blocks)))
-        if unreachable:
-            msg += "\n%d unreachable." % unreachable
-        if no_trtc:
-            msg += "\n%d reachable but no TRTC stream." % no_trtc
-        lark_send_message(token, msg)
+        # send the summary as a Lark card
+        lark_send_card(token, build_summary_card(now, ok, len(blocks), unreachable, no_trtc))
         print("OK: filled %d/%d encoders (%d unreachable, %d no-TRTC)"
-              % (ok, len(blocks), unreachable, no_trtc))
+              % (ok, len(blocks), len(unreachable), len(no_trtc)))
 
     except Exception:
         err = traceback.format_exc()
