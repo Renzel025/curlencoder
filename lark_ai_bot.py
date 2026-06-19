@@ -44,6 +44,10 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
+# Reuse the real encoder logic from the monitor so the bot can actually CHECK
+# encoders (not just talk about them). These read ENCODER_* env at import time.
+import encoder_monitor as enc
+
 # ----------------------------------------------------------------------------
 # CONFIG  (read from env so secrets never live in the repo)
 # ----------------------------------------------------------------------------
@@ -62,8 +66,13 @@ OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TIMEOUT  = int(os.environ.get("OPENAI_TIMEOUT", "60"))
 SYSTEM_PROMPT   = os.environ.get(
     "SYSTEM_PROMPT",
-    "You are a helpful assistant in a Lark (Feishu) chat. Answer clearly and "
-    "concisely. Use plain text — no markdown tables or images.",
+    "You are the OTE encoder assistant in a Lark chat. You help monitor TRTC "
+    "video encoders. Each encoder is reachable at http://<ip> and exposes its "
+    "streaming config. When a user asks you to check, curl, test, or look at an "
+    "encoder (or just gives you an IP and asks about it), CALL the check_encoder "
+    "tool with that IP instead of explaining how to do it yourself — actually run "
+    "it and report the result. Outputs map to streams: 0=Mainstream, "
+    "1=Substream 1, 2=Substream 2. Answer clearly and concisely in plain text.",
 )
 
 # how many past turns (user+assistant messages) to keep per thread for context
@@ -112,12 +121,85 @@ def _trim(history):
 
 
 # ----------------------------------------------------------------------------
-# OpenAI Chat Completions (stdlib HTTP)
+# Tools the LLM can actually call (function calling)
 # ----------------------------------------------------------------------------
-def openai_chat(messages):
-    """POST to the OpenAI Chat Completions API and return the reply text."""
+# JSON schema advertised to the model. When the user asks to check an encoder,
+# the model returns a tool_call for this instead of replying with text.
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_encoder",
+            "description": (
+                "Curl a TRTC video encoder by IP and report whether it is reachable "
+                "and its per-output streaming config (RoomID/UserID/SDKAppID/Usersig/"
+                "PrivateMapKey and any Agora rtmp link). Use this whenever the user "
+                "asks to check, curl, test, ping, or inspect an encoder, or gives an "
+                "IP and asks about its config/status."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ip": {
+                        "type": "string",
+                        "description": "The encoder's IPv4 address, e.g. 10.230.84.78",
+                    },
+                    "outputs": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated output indexes to check "
+                            "(0=Mainstream, 1=Substream 1, 2=Substream 2). "
+                            "Default '0,1,2'."
+                        ),
+                    },
+                },
+                "required": ["ip"],
+            },
+        },
+    }
+]
+
+
+def tool_check_encoder(ip, outputs="0,1,2"):
+    """Actually curl the encoder (reusing encoder_monitor) and return a result dict.
+
+    Returns JSON the model turns into a human answer — never raises; per-output
+    errors are captured so one dead output doesn't fail the whole check.
+    """
+    ip = (ip or "").strip()
+    m = enc.IPV4_RE.search(ip)
+    if not m:
+        return {"error": "not a valid IPv4 address: %r" % ip}
+    ip = m.group(0)
+
+    out_list = [o.strip() for o in str(outputs or "0,1,2").split(",") if o.strip()]
+    label = {"0": "Mainstream", "1": "Substream 1", "2": "Substream 2"}
+    streams, reachable = [], False
+    for out in out_list:
+        try:
+            cfg = enc.parse_output_config(enc.fetch_output(ip, out))
+            reachable = True
+            streams.append(dict(output=out, stream=label.get(out, "output %s" % out),
+                                has_trtc=bool(cfg.get("RoomID")), **cfg))
+        except Exception as e:
+            streams.append({"output": out, "stream": label.get(out, "output %s" % out),
+                            "error": str(e)})
+    return {"ip": ip, "reachable": reachable, "streams": streams}
+
+
+_TOOL_DISPATCH = {"check_encoder": tool_check_encoder}
+
+
+# ----------------------------------------------------------------------------
+# LLM Chat Completions (stdlib HTTP) — with a tool-calling loop
+# ----------------------------------------------------------------------------
+def _llm_request(messages, tools=None):
+    """One POST to the (OpenAI-compatible) chat API; returns the parsed body."""
     url = OPENAI_BASE.rstrip("/") + "/chat/completions"
     payload = {"model": OPENAI_MODEL, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -134,11 +216,47 @@ def openai_chat(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
-            body = json.loads(resp.read().decode("utf-8", "replace"))
+            return json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         raise RuntimeError("LLM API HTTP %s: %s" % (e.code, detail[:500]))
-    return body["choices"][0]["message"]["content"].strip()
+
+
+def llm_chat(messages):
+    """Run the chat, executing any tool calls, until the model returns text.
+
+    `messages` is mutated with the assistant/tool turns; pass a throwaway copy
+    (so tool plumbing stays out of the persisted per-thread history).
+    """
+    for _ in range(5):                       # cap tool round-trips
+        body = _llm_request(messages, tools=TOOLS)
+        msg = body["choices"][0]["message"]
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            return (msg.get("content") or "").strip()
+
+        messages.append(msg)                 # the assistant turn that requested tools
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except ValueError:
+                args = {}
+            handler = _TOOL_DISPATCH.get(name)
+            if handler is None:
+                result = {"error": "unknown tool: %s" % name}
+            else:
+                try:
+                    result = handler(**args)
+                except Exception as e:       # never let a tool crash the turn
+                    result = {"error": "%s failed: %s" % (name, e)}
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "content": json.dumps(result),
+            })
+    return "I tried a few steps but couldn't finish that — please try rephrasing."
 
 
 # ----------------------------------------------------------------------------
@@ -199,8 +317,11 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     history.append({"role": "user", "content": user_text})
     _trim(history)
 
+    # throwaway copy so tool-call / tool-result turns don't pollute the saved
+    # per-thread history (we only persist the user text + final answer)
+    convo = [{"role": "system", "content": SYSTEM_PROMPT}] + [dict(m) for m in history]
     try:
-        answer = openai_chat([{"role": "system", "content": SYSTEM_PROMPT}] + history)
+        answer = llm_chat(convo)
     except Exception as e:
         sys.stderr.write("[llm error] %s\n" % e)
         reply_in_thread(message_id, "⚠️ Sorry, I couldn't reach the AI service just now.")

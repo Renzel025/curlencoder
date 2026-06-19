@@ -36,8 +36,16 @@ nano lark_ai_bot.env      # fill in the values below
 | `OPENAI_BASE` | **Groq:** `https://api.groq.com/openai/v1` · **OpenAI:** `https://api.openai.com/v1` |
 | `OPENAI_MODEL` | **Groq:** `llama-3.3-70b-versatile` · **OpenAI:** `gpt-4o-mini` |
 | `SYSTEM_PROMPT` | the bot's persona / instructions |
+| `ENCODER_USER` / `ENCODER_PASS` / `ENCODER_SCHEME` / `ENCODER_INPUT` | same as `encoder_monitor.env` — needed for the **check_encoder** tool |
 
 > The vars are named `OPENAI_*` but work for any OpenAI-compatible API (Groq included).
+
+### Tools (function calling)
+The bot can **actually act**, not just chat. When you say e.g. *"@bot check
+10.230.84.78"*, it calls the **`check_encoder`** tool, which reuses
+`encoder_monitor.py`'s `fetch_output()` / `parse_output_config()` to curl the
+encoder and report whether it's reachable + its TRTC/Agora config per output.
+This is why the `ENCODER_*` vars must be in `lark_ai_bot.env`.
 
 ---
 
