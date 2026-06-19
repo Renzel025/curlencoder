@@ -342,19 +342,36 @@ def _lark_post_message(token, msg_type, content):
         raise RuntimeError("Lark message failed: %s" % body)
 
 
+def _split_token_tab(s):
+    """Pull (token, tab) from any form: token, token@tab, token?sheet=tab,
+    or a full URL like https://.../sheets/<token>?sheet=<tab>."""
+    tab = ""
+    if "/sheets/" in s:                       # full URL pasted
+        s = s.split("/sheets/", 1)[1]
+    if "?" in s:                              # ...?sheet=<tab>
+        s, query = s.split("?", 1)
+        mq = re.search(r"sheet=([^&]+)", query)
+        if mq:
+            tab = mq.group(1)
+    if "@" in s:                              # token@<tab>
+        s, tab2 = s.split("@", 1)
+        tab = tab or tab2
+    return s.strip(), tab.strip()
+
+
 def parse_sheets():
     """Parse LARK_SHEETS into [(name, token, tab)]; falls back to the single-sheet env."""
     entries = []
     for e in LARK_SHEETS.replace(",", " ").split():
         name = ""
+        # optional "name=" prefix (short identifier, not part of a URL/token)
         if "=" in e:
-            name, e = e.split("=", 1)
-        tab = ""
-        if "@" in e:
-            e, tab = e.split("@", 1)
-        token = e.strip()
+            left, right = e.split("=", 1)
+            if re.match(r"^[A-Za-z0-9_-]{1,20}$", left):
+                name, e = left, right
+        token, tab = _split_token_tab(e)
         if token:
-            entries.append((name.strip() or token[:8], token, tab.strip()))
+            entries.append((name or token[:8], token, tab))
     if not entries and LARK_SHEET_TOKEN:
         entries.append(("sheet", LARK_SHEET_TOKEN, LARK_SHEET_TAB))
     return entries
