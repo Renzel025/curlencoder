@@ -1,0 +1,6 @@
+# Only the Lark AI bot (lark_ai_bot.py) needs a dependency — the official Lark
+# SDK, used for long-connection (WebSocket) event subscription.
+# encoder_monitor.py stays standard-library only and needs nothing here.
+#
+#   pip install -r requirements.txt
+lark-oapi>=1.4
