@@ -13,9 +13,11 @@ Flow:
               |    |          | SDKAppID      |   ...
               |    |          | PrivateMapKey |   ...
               |    |          | Usersig       |   ...
-  2. for EACH encoder (found by its IP in column B) curl http://<ip>/get_status
-  3. parse the 3 TRTC publish streams (Mainstream / Substream 1 / Substream 2),
-     pulling RoomID / UserID / SDKAppID / PrivateMapKey / Usersig from each
+  2. for EACH encoder (found by its IP in column B), for each output/stream
+     curl http://<ip>/get_output?input=0&output=N   (N = 0/1/2)
+  3. pull the SDK TRTC config from each output:
+     RoomID / UserID / SDKAppID / Usersig / PrivateMapKey
+     (output 0 -> Mainstream, 1 -> Substream 1, 2 -> Substream 2)
   4. write those values into columns E/F/G of the block's SDK TRTC rows
   5. notify the OTE group chat (✅ / ⚠️ / ❌)
 
@@ -43,11 +45,11 @@ import xml.etree.ElementTree as ET
 # ----------------------------------------------------------------------------
 # --- Encoder access (applies to every encoder we curl) ---
 # curl -s --digest -u admin:admin --connect-timeout 10 http://<ip>/get_status
-ENCODER_PATH     = os.environ.get("ENCODER_PATH", "/get_status")  # shared path on every encoder
 ENCODER_SCHEME   = os.environ.get("ENCODER_SCHEME", "http")       # http or https
 ENCODER_USER     = os.environ.get("ENCODER_USER", "admin")        # digest auth user
 ENCODER_PASS     = os.environ.get("ENCODER_PASS", "admin")        # digest auth password
 ENCODER_TIMEOUT  = int(os.environ.get("ENCODER_TIMEOUT", "10"))   # --connect-timeout 10
+ENCODER_INPUT    = os.environ.get("ENCODER_INPUT", "0")           # /get_output?input=N (single HDMI = 0)
 
 # --- Lark Custom App ---
 LARK_DOMAIN      = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com")  # open.feishu.cn for Feishu
@@ -62,6 +64,9 @@ LARK_SHEET_TAB   = os.environ.get("LARK_OUT_SHEET_ID", "")        # tab id (the 
 TPL_IP_COL       = os.environ.get("TPL_IP_COL", "B")              # column with each encoder's IP
 TPL_PARAM_COL    = os.environ.get("TPL_PARAM_COL", "D")           # column with RoomID/UserID/... labels
 TPL_STREAM_COLS  = os.environ.get("TPL_STREAM_COLS", "E,F,G")     # Mainstream, Substream 1, Substream 2
+# encoder outputs that map to the stream columns above, in the SAME order.
+# output 0 = Mainstream, 1 = Substream 1, 2 = Substream 2 (matches Baccarat.xlsx).
+TPL_OUTPUTS      = os.environ.get("TPL_OUTPUTS", "0,1,2")
 
 REQUEST_TIMEOUT  = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 
@@ -116,12 +121,15 @@ def _col_to_idx(letter):
 
 
 # ----------------------------------------------------------------------------
-# 1. curl an encoder
+# 1. curl an encoder's per-output config
 # ----------------------------------------------------------------------------
-def fetch_encoder_xml(ip):
-    """curl -s --digest -u admin:admin --connect-timeout 10 http://<ip>/get_status"""
-    path = ENCODER_PATH if ENCODER_PATH.startswith("/") else "/" + ENCODER_PATH
-    url = "%s://%s%s" % (ENCODER_SCHEME, ip, path)
+def fetch_output(ip, output):
+    """curl --digest http://<ip>/get_output?input=0&output=<N>  -> raw XML.
+
+    This config endpoint holds the TRTC creds for every encoder (whether it
+    pushes via rtmp-relay or connects to TRTC directly), unlike /get_status.
+    """
+    url = "%s://%s/get_output?input=%s&output=%s" % (ENCODER_SCHEME, ip, ENCODER_INPUT, output)
     pwd_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     pwd_mgr.add_password(None, url, ENCODER_USER, ENCODER_PASS)
     handler = urllib.request.HTTPDigestAuthHandler(pwd_mgr)
@@ -137,41 +145,31 @@ def fetch_encoder_xml(ip):
 
 
 # ----------------------------------------------------------------------------
-# 2. parse the TRTC publish streams
+# 2. parse one output's TRTC config
 # ----------------------------------------------------------------------------
-def parse_trtc_streams(xml_text):
-    """Return a list of TRTC stream dicts, in venc order (Mainstream, Sub1, Sub2...).
+def parse_output_config(xml_text):
+    """Pull the SDK TRTC fields out of a /get_output response.
 
-    Each <venc> block pushes to several destinations; we keep ONLY the TRTC one
-    (rtc.qq.com/push/<room>?sdkappid=...&userid=...&usersig=...&private_map_key=...)
-    and ignore the Agora (/live/<key>) URLs that have no query parameters.
-
-    From the TRTC url we pull:
-      RoomID = last path segment, plus UserID / SDKAppID / Usersig / PrivateMapKey
-      from the query string.
+    Tag mapping (note PrivateMapKey is stored as 'room_password'):
+      trtc_publish_room_id       -> RoomID
+      trtc_publish_user_id       -> UserID
+      trtc_publish_app_id        -> SDKAppID
+      trtc_publish_user_sig      -> Usersig
+      trtc_publish_room_password -> PrivateMapKey
     """
     root = ET.fromstring(xml_text)
-    streams = []
-    for venc in root.iter("venc"):
-        trtc = None
-        for child in venc:
-            tag = child.tag or ""
-            txt = (child.text or "").strip()
-            if "rtmp_publish_url" in tag and ("rtc.qq.com" in txt or "sdkappid=" in txt):
-                trtc = txt
-                break
-        if not trtc:
-            continue
-        parts = urllib.parse.urlsplit(trtc)
-        q = urllib.parse.parse_qs(parts.query)
-        streams.append({
-            "RoomID":        parts.path.rsplit("/", 1)[-1],
-            "UserID":        (q.get("userid") or [""])[0],
-            "SDKAppID":      (q.get("sdkappid") or [""])[0],
-            "PrivateMapKey": (q.get("private_map_key") or [""])[0],
-            "Usersig":       (q.get("usersig") or [""])[0],
-        })
-    return streams
+
+    def tag(name):
+        el = root.find(name)
+        return (el.text or "").strip() if el is not None and el.text else ""
+
+    return {
+        "RoomID":        tag("trtc_publish_room_id"),
+        "UserID":        tag("trtc_publish_user_id"),
+        "SDKAppID":      tag("trtc_publish_app_id"),
+        "Usersig":       tag("trtc_publish_user_sig"),
+        "PrivateMapKey": tag("trtc_publish_room_password"),
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -266,7 +264,7 @@ def build_value_ranges(block, streams):
         row_num = block["rows"].get(param)
         if not row_num:
             continue
-        vals = [streams[i][field] if i < len(streams) else "" for i in range(len(stream_cols))]
+        vals = [streams[i].get(field, "") if i < len(streams) else "" for i in range(len(stream_cols))]
         rng = "%s!%s%d:%s%d" % (LARK_SHEET_TAB, first_col, row_num, last_col, row_num)
         ranges.append({"range": rng, "values": [vals]})
     return ranges
@@ -302,22 +300,29 @@ def main():
             raise RuntimeError("Found 0 encoder blocks in the template — check TPL_IP_COL / the tab id")
         print("Found %d encoder block(s) in the template" % len(blocks))
 
+        outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
         value_ranges = []
         ok = 0
         unreachable = 0
         no_trtc = 0
         for block in blocks:
             ip = block["ip"]
-            try:
-                xml_text = fetch_encoder_xml(ip)
-                streams = parse_trtc_streams(xml_text)
-            except Exception as e:
+            # one /get_output call per stream: output 0 -> Mainstream, 1 -> Sub1, ...
+            streams = []
+            reachable = True
+            for out in outputs:
+                try:
+                    streams.append(parse_output_config(fetch_output(ip, out)))
+                except Exception as e:
+                    reachable = False
+                    sys.stderr.write("[%s output=%s] %s\n" % (ip, out, e))
+                    break
+            if not reachable:
                 unreachable += 1
-                sys.stderr.write("[%s] %s\n" % (ip, e))
                 continue
-            if not streams:
+            if not any(s.get("RoomID") for s in streams):
                 no_trtc += 1
-                sys.stderr.write("[%s] reachable but no TRTC stream found\n" % ip)
+                sys.stderr.write("[%s] reachable but no TRTC config\n" % ip)
                 continue
             ok += 1
             value_ranges.extend(build_value_ranges(block, streams))
