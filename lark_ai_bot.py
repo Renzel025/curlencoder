@@ -42,6 +42,9 @@ from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
+    CreateMessageReactionRequest,
+    CreateMessageReactionRequestBody,
+    Emoji,
 )
 
 # Reuse the real encoder logic from the monitor so the bot can actually CHECK
@@ -77,6 +80,13 @@ SYSTEM_PROMPT   = os.environ.get(
 
 # how many past turns (user+assistant messages) to keep per thread for context
 HISTORY_TURNS   = int(os.environ.get("HISTORY_TURNS", "12"))
+
+# emoji reactions the bot puts on YOUR message: one when it starts ("got it"),
+# one when it's finished replying ("done"). Set REACTIONS=0 to turn off. The
+# values are Lark emoji_type keys (e.g. OnIt, DONE, THUMBSUP, OK, DoneTick).
+REACTIONS_ON    = os.environ.get("REACTIONS", "1").lower() not in ("0", "false", "no", "")
+REACT_ACK       = os.environ.get("REACT_ACK", "OnIt")    # on receive: "got it"
+REACT_DONE      = os.environ.get("REACT_DONE", "DONE")   # after reply: "done"
 
 # strips Lark's @mention placeholders like "@_user_1" / "@_all" from message text
 MENTION_RE = re.compile(r"@_(?:user_\d+|all)\b")
@@ -283,6 +293,35 @@ def reply_in_thread(message_id, text):
         )
 
 
+def add_reaction(message_id, emoji_type):
+    """React to a message with a Lark emoji (e.g. 'OnIt', 'DONE').
+
+    Best-effort: a reaction failure must never break the actual reply, so all
+    errors are swallowed (logged only).
+    """
+    if not (REACTIONS_ON and emoji_type):
+        return
+    try:
+        request = (
+            CreateMessageReactionRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                CreateMessageReactionRequestBody.builder()
+                .reaction_type(Emoji.builder().emoji_type(emoji_type).build())
+                .build()
+            )
+            .build()
+        )
+        resp = _client.im.v1.message_reaction.create(request)
+        if not resp.success():
+            sys.stderr.write(
+                "[reaction '%s' failed] code=%s msg=%s\n"
+                % (emoji_type, resp.code, resp.msg)
+            )
+    except Exception as e:
+        sys.stderr.write("[reaction '%s' error] %s\n" % (emoji_type, e))
+
+
 def _extract_text(message):
     """Get clean user text from a text message, dropping @mention placeholders."""
     try:
@@ -311,6 +350,9 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     if not user_text:
         return
 
+    # "got it" — react the moment we pick the message up
+    add_reaction(message_id, REACT_ACK)
+
     # group follow-ups share a thread_id; DMs fall back to the chat_id
     thread_key = msg.thread_id or msg.chat_id
     history = _history_for(thread_key)
@@ -330,6 +372,8 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     history.append({"role": "assistant", "content": answer})
     _trim(history)
     reply_in_thread(message_id, answer)
+    # "done" — react once the reply is posted
+    add_reaction(message_id, REACT_DONE)
 
 
 # ----------------------------------------------------------------------------

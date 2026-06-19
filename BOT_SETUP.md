@@ -59,6 +59,7 @@ At <https://open.larksuite.com> → your app:
    - `im:message.group_at_msg:readonly` (hear @mentions in groups)
    - `im:message.p2p_msg:readonly` (hear DMs)
    - `im:message:send_as_bot` (reply)
+   - `im:message.reaction:write` (the 👀 "got it" / ✅ "done" reactions)
 3. **Version Management & Release → create & release a new version.** Nothing goes
    live until released.
 4. Add the bot to the group(s) you want it in.
