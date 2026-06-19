@@ -50,6 +50,10 @@ from lark_oapi.api.im.v1 import (
 # --- Lark Custom App (same app as encoder_monitor.py) ---
 LARK_APP_ID     = os.environ.get("LARK_APP_ID", "")
 LARK_APP_SECRET = os.environ.get("LARK_APP_SECRET", "")
+# Which Lark cluster the app lives on. larksuite.com = Lark international (what
+# encoder_monitor.env uses); feishu.cn = Feishu (China). MUST match your app, or
+# the long connection fails with "Incorrect domain name".
+LARK_DOMAIN     = os.environ.get("LARK_DOMAIN", "https://open.larksuite.com")
 
 # --- OpenAI (the brain) ---
 OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
@@ -82,6 +86,7 @@ _client = (
     lark.Client.builder()
     .app_id(LARK_APP_ID)
     .app_secret(LARK_APP_SECRET)
+    .domain(LARK_DOMAIN)
     .build()
 )
 
@@ -224,6 +229,7 @@ def main():
         LARK_APP_ID,
         LARK_APP_SECRET,
         event_handler=handler,
+        domain=LARK_DOMAIN,
         log_level=lark.LogLevel.INFO,
     )
     ws.start()   # blocks; reconnects automatically
