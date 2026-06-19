@@ -15,11 +15,14 @@ Flow:
               |    |          | Usersig       |   ...
   2. for EACH encoder (found by its IP in column B), for each output/stream
      curl http://<ip>/get_output?input=0&output=N   (N = 0/1/2)
-  3. pull the SDK TRTC config from each output:
-     RoomID / UserID / SDKAppID / Usersig / PrivateMapKey
+  3. pull from each output:
+     - SDK TRTC: RoomID / UserID / SDKAppID / Usersig / PrivateMapKey
+     - Agora: the rtmp push link (the rtmp_publish_uri pointing at an agora host)
      (output 0 -> Mainstream, 1 -> Substream 1, 2 -> Substream 2)
-  4. write those values into columns E/F/G of the block's SDK TRTC rows
-  5. notify the OTE group chat (✅ / ⚠️ / ❌)
+  4. write the SDK TRTC values into the block's E/F/G rows, and the Agora link
+     into the E/F/G of the "Agora" row
+  5. notify the OTE group chat with an interactive card (✅ / ⚠️), naming any
+     encoder (table code + IP) that was unreachable or had no TRTC config
 
 One unreachable encoder doesn't stop the run. Uses ONLY the Python standard
 library so nothing needs pip on the prod server. Python 3.6+.
@@ -63,6 +66,7 @@ LARK_SHEET_TAB   = os.environ.get("LARK_OUT_SHEET_ID", "")        # tab id (the 
 # Column layout of the template (Baccarat.xlsx style). Change if your sheet differs.
 TPL_TABLE_COL    = os.environ.get("TPL_TABLE_COL", "A")           # column with the table/encoder name
 TPL_IP_COL       = os.environ.get("TPL_IP_COL", "B")              # column with each encoder's IP
+TPL_REMARK_COL   = os.environ.get("TPL_REMARK_COL", "C")          # column with Agora/QAT/SDK TRTC labels
 TPL_PARAM_COL    = os.environ.get("TPL_PARAM_COL", "D")           # column with RoomID/UserID/... labels
 TPL_STREAM_COLS  = os.environ.get("TPL_STREAM_COLS", "E,F,G")     # Mainstream, Substream 1, Substream 2
 # encoder outputs that map to the stream columns above, in the SAME order.
@@ -164,12 +168,21 @@ def parse_output_config(xml_text):
         el = root.find(name)
         return (el.text or "").strip() if el is not None and el.text else ""
 
+    # the Agora push link is whichever rtmp_publish_uri_N points at an agora host
+    agora_rtmp = ""
+    for i in range(3):
+        uri = tag("rtmp_publish_uri_%d" % i)
+        if "agora" in uri.lower():
+            agora_rtmp = uri
+            break
+
     return {
         "RoomID":        tag("trtc_publish_room_id"),
         "UserID":        tag("trtc_publish_user_id"),
         "SDKAppID":      tag("trtc_publish_app_id"),
         "Usersig":       tag("trtc_publish_user_sig"),
         "PrivateMapKey": tag("trtc_publish_room_password"),
+        "AgoraRTMP":     agora_rtmp,
     }
 
 
@@ -221,6 +234,7 @@ def read_template_blocks(token):
     grid = lark_read_grid(token, "A1:Z2000")
     table_i = _col_to_idx(TPL_TABLE_COL)
     ip_i = _col_to_idx(TPL_IP_COL)
+    remark_i = _col_to_idx(TPL_REMARK_COL)
     param_i = _col_to_idx(TPL_PARAM_COL)
 
     blocks = []
@@ -230,10 +244,13 @@ def read_template_blocks(token):
         m = IPV4_RE.search(ip_cell)
         if m:
             table = _cell_text(row[table_i]).strip() if len(row) > table_i else ""
-            current = {"table": table, "ip": m.group(0), "rows": {}}
+            current = {"table": table, "ip": m.group(0), "rows": {}, "agora_row": None}
             blocks.append(current)
         if current is None:
             continue
+        remark = _cell_text(row[remark_i]).strip().lower() if len(row) > remark_i else ""
+        if remark == "agora":
+            current["agora_row"] = r + 1     # row whose E/F/G hold the Agora links
         param = _cell_text(row[param_i]).strip().lower().replace(" ", "") if len(row) > param_i else ""
         if param in PARAM_TO_FIELD:
             current["rows"][param] = r + 1
@@ -262,14 +279,21 @@ def build_value_ranges(block, streams):
     """
     stream_cols = [c.strip() for c in TPL_STREAM_COLS.split(",") if c.strip()]
     first_col, last_col = stream_cols[0], stream_cols[-1]
-    ranges = []
-    for param, field in PARAM_TO_FIELD.items():
-        row_num = block["rows"].get(param)
-        if not row_num:
-            continue
+
+    def row_range(row_num, field):
         vals = [streams[i].get(field, "") if i < len(streams) else "" for i in range(len(stream_cols))]
         rng = "%s!%s%d:%s%d" % (LARK_SHEET_TAB, first_col, row_num, last_col, row_num)
-        ranges.append({"range": rng, "values": [vals]})
+        return {"range": rng, "values": [vals]}
+
+    ranges = []
+    # SDK TRTC rows (RoomID / UserID / SDKAppID / PrivateMapKey / Usersig)
+    for param, field in PARAM_TO_FIELD.items():
+        row_num = block["rows"].get(param)
+        if row_num:
+            ranges.append(row_range(row_num, field))
+    # Agora row: the per-output Agora rtmp link across Mainstream/Sub1/Sub2
+    if block.get("agora_row"):
+        ranges.append(row_range(block["agora_row"], "AgoraRTMP"))
     return ranges
 
 
