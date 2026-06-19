@@ -1,61 +1,59 @@
 # Encoder Monitor — setup on OTG-Prod
 
-## 1. Create the files on the server (one directory: /opt/curlencoder)
-On the server, make the directory and create each file, then paste in the
-contents from your local copies.
+## 1. Get the files onto the server (via git)
 ```bash
-sudo mkdir -p /opt/curlencoder
+sudo yum install -y git              # or: sudo apt install -y git
+sudo git clone https://github.com/<your-username>/curlencoder.git /opt/curlencoder
+cd /opt/curlencoder
 
-# paste the contents of encoder_monitor.py, then save (Ctrl-O, Enter, Ctrl-X)
-sudo nano /opt/curlencoder/encoder_monitor.py
-
-# paste the contents of encoder_monitor.env, then save
-sudo nano /opt/curlencoder/encoder_monitor.env
-
-# lock down permissions
-sudo chmod 600 /opt/curlencoder/encoder_monitor.env   # secrets — root only
-sudo chmod 755 /opt/curlencoder/encoder_monitor.py
+# create the .env from the template and fill in secrets (it is NOT in git)
+sudo cp encoder_monitor.env.example encoder_monitor.env
+sudo vi encoder_monitor.env
+sudo chmod 600 encoder_monitor.env   # secrets — root only
 ```
-(`nano` is easiest; `vi` works too. Just make sure you paste the WHOLE file.)
+To update later: `cd /opt/curlencoder && sudo git pull`.
 
 ## 2. Create the Lark Custom App (one time)
 1. Go to the Lark Developer Console → **Create Custom App**.
 2. Copy **App ID** (`cli_...`) and **App Secret** → into `encoder_monitor.env`.
 3. **Permissions / Scopes** — add and publish these:
    - `im:message` and `im:message:send_as_bot`  (post to the OTE group)
-   - `sheets:spreadsheet`  (read the IP-list sheet AND write the results sheet)
-   - `docx:document`  (only needed if you use the Lark Doc fallback output)
+   - `sheets:spreadsheet`  (read the template sheet AND write values back)
 4. **Add the bot to the OTE group chat** (otherwise it can't post there).
-5. Get the **chat_id**: in the group, or via the API `GET /open-apis/im/v1/chats`.
+5. Get the **chat_id**: in the group, or via `GET /open-apis/im/v1/chats`.
    It looks like `oc_xxxxxxxx`. → `LARK_CHAT_ID`.
-6. Get the **document_id**: open the Lark Doc; it's the long token in the URL
-   `.../docx/<document_id>`. → `LARK_DOC_ID`.
-   Make sure the app (or a group it's in) has edit access to that doc.
-7. **Encoder IP sheet (INPUT)**: the IPs are read from a Lark spreadsheet.
-   - `LARK_IP_SHEET_TOKEN` = the token in the sheet URL `.../sheets/<token>`.
-   - The sheet is laid out in game sections: the game name is in column A on the
-     first row of each block only, and the rows below it (blank A) belong to the
-     same game. The script carries the section name down and collects every IPv4
-     in column C (`encoder ip`) while the section matches `LARK_IP_SECTION`
-     (default `baccarat`).
-   - Columns are configurable: `LARK_IP_LABEL_COL` (A), `LARK_IP_VALUE_COL` (C).
-   - Give the app **read access** to that sheet.
+6. **Share the template sheet with the app** with **edit** access (the app reads
+   the encoder list from it and writes the parsed values back).
 
-8. **Results sheet (OUTPUT)**: parsed results are appended as rows.
-   - `LARK_OUT_SHEET_TOKEN` = the destination spreadsheet token.
-   - `LARK_OUT_SHEET_ID` = the tab id — the `?sheet=XXXX` value in the sheet URL.
-   - Columns written: `Date | Encoder IP | Room | UserID | SDKAppID | Status | FLV`.
-   - Give the app **edit access** to that sheet.
-   - Leave `LARK_OUT_SHEET_TOKEN` blank to append to the Lark Doc instead.
+## 3. The template sheet
+The script reads AND writes one Lark Sheet, laid out like `Baccarat.xlsx` — one
+block per encoder:
+```
+A=table  B=ip            C=remark    D=parameter      E=Mainstream  F=Substream 1  G=Substream 2
+ELV01    10.230.30.106   Agora       -                <agora url>   -              -
+                         QAT         -
+                         SDK TRTC    RoomID           <filled>      <filled>       <filled>
+                                     UserID           ...
+                                     SDKAppID         ...
+                                     PrivateMapKey    ...
+                                     Usersig          ...
+```
+- `LARK_OUT_SHEET_TOKEN` = token in the sheet URL `.../sheets/<token>`.
+- `LARK_OUT_SHEET_ID` = the `?sheet=XXXX` tab id in the URL.
+- The script finds each encoder by its **IP (column B)**, curls it, parses the 3
+  TRTC streams, and fills the 5 `SDK TRTC` rows across **E/F/G**
+  (Mainstream / Substream 1 / Substream 2).
+- If your columns differ, adjust `TPL_IP_COL` / `TPL_PARAM_COL` / `TPL_STREAM_COLS`.
 
-## 3. Test by hand before scheduling
+## 4. Test by hand before scheduling
 ```bash
 source /opt/curlencoder/encoder_monitor.env
 python3 /opt/curlencoder/encoder_monitor.py
 ```
-You should see `OK: N/M encoders reachable`, new rows in the output sheet, and a ✅ in the group.
+You should see `OK: filled N/M encoders`, the E/F/G cells populated in the sheet,
+and a ✅ in the group.
 
-## 4. Add the cron job  (weekly, Monday 07:00)
+## 5. Add the cron job  (weekly, Monday 07:00)
 ```bash
 sudo crontab -e
 ```
