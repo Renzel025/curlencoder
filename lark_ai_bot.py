@@ -245,18 +245,29 @@ def _llm_request(messages, tools=None):
             raise RuntimeError("LLM API HTTP %s: %s" % (e.code, detail[:500]))
 
 
-def llm_chat(messages):
+def llm_chat(messages, on_tools=None):
     """Run the chat, executing any tool calls, until the model returns text.
 
     `messages` is mutated with the assistant/tool turns; pass a throwaway copy
     (so tool plumbing stays out of the persisted per-thread history).
+
+    `on_tools(tool_calls)` is called once, the first time the model decides to
+    run tools — used to post a "hold on, checking…" notice before the slow work.
     """
+    notified = False
     for _ in range(5):                       # cap tool round-trips
         body = _llm_request(messages, tools=TOOLS)
         msg = body["choices"][0]["message"]
         tool_calls = msg.get("tool_calls")
         if not tool_calls:
             return (msg.get("content") or "").strip()
+
+        if on_tools and not notified:        # tell the user we're on it (once)
+            notified = True
+            try:
+                on_tools(tool_calls)
+            except Exception as e:
+                sys.stderr.write("[on_tools error] %s\n" % e)
 
         messages.append(msg)                 # the assistant turn that requested tools
         for tc in tool_calls:
@@ -372,11 +383,30 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     history.append({"role": "user", "content": user_text})
     _trim(history)
 
+    # posted once if/when the model decides to run a tool, so the user gets an
+    # instant "on it, checking…" before the (slower) actual work + final answer.
+    def announce(tool_calls):
+        ips = []
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            if fn.get("name") != "check_encoder":
+                continue
+            try:
+                ip = json.loads(fn.get("arguments") or "{}").get("ip", "")
+            except ValueError:
+                ip = ""
+            if ip:
+                ips.append(ip)
+        if ips:
+            reply_in_thread(message_id, "On it — checking %s now… 🔍" % ", ".join(ips))
+        else:
+            reply_in_thread(message_id, "On it — working on that now… 🔍")
+
     # throwaway copy so tool-call / tool-result turns don't pollute the saved
     # per-thread history (we only persist the user text + final answer)
     convo = [{"role": "system", "content": SYSTEM_PROMPT}] + [dict(m) for m in history]
     try:
-        answer = llm_chat(convo)
+        answer = llm_chat(convo, on_tools=announce)
     except Exception as e:
         sys.stderr.write("[llm error] %s\n" % e)
         reply_in_thread(message_id, "⚠️ Sorry, I couldn't reach the AI service just now.")
