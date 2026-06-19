@@ -124,6 +124,11 @@ def openai_chat(messages):
         headers={
             "Authorization": "Bearer " + OPENAI_API_KEY,
             "Content-Type": "application/json",
+            # Some providers (e.g. Groq) sit behind Cloudflare, which blocks the
+            # default "Python-urllib/x" agent with a 403 "error code: 1010".
+            # A normal User-Agent gets us through.
+            "User-Agent": "curlencoder-lark-bot/1.0",
+            "Accept": "application/json",
         },
         method="POST",
     )
@@ -132,7 +137,7 @@ def openai_chat(messages):
             body = json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
-        raise RuntimeError("OpenAI HTTP %s: %s" % (e.code, detail[:500]))
+        raise RuntimeError("LLM API HTTP %s: %s" % (e.code, detail[:500]))
     return body["choices"][0]["message"]["content"].strip()
 
 
@@ -197,7 +202,7 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     try:
         answer = openai_chat([{"role": "system", "content": SYSTEM_PROMPT}] + history)
     except Exception as e:
-        sys.stderr.write("[openai error] %s\n" % e)
+        sys.stderr.write("[llm error] %s\n" % e)
         reply_in_thread(message_id, "⚠️ Sorry, I couldn't reach the AI service just now.")
         return
 
