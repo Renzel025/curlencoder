@@ -5,6 +5,7 @@ encoder_monitor.py
 Weekly cron job (runs Mon 07:00 on OTG-Prod).
 
 Flow:
+  (runs for EACH sheet listed in LARK_SHEETS — e.g. lavie/stots/dheights/newport)
   1. read the encoder template from a Lark Sheet — each encoder is a block:
         table | ip | Agora | -            | <main agora url> | - | -
               |    | QAT   | -            | -                | - | -
@@ -60,9 +61,16 @@ LARK_APP_ID      = os.environ.get("LARK_APP_ID", "")
 LARK_APP_SECRET  = os.environ.get("LARK_APP_SECRET", "")
 LARK_CHAT_ID     = os.environ.get("LARK_CHAT_ID", "")             # OTE group chat_id (oc_xxx)
 
-# --- The template Lark Sheet we read AND write back into ---
-LARK_SHEET_TOKEN = os.environ.get("LARK_OUT_SHEET_TOKEN", "")     # spreadsheet token from the URL
-LARK_SHEET_TAB   = os.environ.get("LARK_OUT_SHEET_ID", "")        # tab id (the ?sheet=XXXX in the URL)
+# --- The template Lark Sheet(s) we read AND write back into ---
+# One run can fill several sheets. List them in LARK_SHEETS, space/comma separated,
+# each entry is:   name=<token>@<tab_id>   (name and @tab are optional)
+#   - <token>   = the long token in the sheet URL .../sheets/<token>
+#   - <tab_id>  = the ?sheet=XXXX in the URL; omit it to use the sheet's first tab
+# e.g. LARK_SHEETS="lavie=GYv...@0kuxDh stots=MSq... dheights=V03... newport=BH6..."
+LARK_SHEETS      = os.environ.get("LARK_SHEETS", "")
+# Backwards-compatible single-sheet fallback (used only if LARK_SHEETS is empty):
+LARK_SHEET_TOKEN = os.environ.get("LARK_OUT_SHEET_TOKEN", "")
+LARK_SHEET_TAB   = os.environ.get("LARK_OUT_SHEET_ID", "")
 # Column layout of the template (Baccarat.xlsx style). Change if your sheet differs.
 TPL_TABLE_COL    = os.environ.get("TPL_TABLE_COL", "A")           # column with the table/encoder name
 TPL_IP_COL       = os.environ.get("TPL_IP_COL", "B")              # column with each encoder's IP
@@ -210,11 +218,24 @@ def _cell_text(cell):
     return str(cell)
 
 
-def lark_read_grid(token, rng):
+def lark_first_tab(token, sheet_token):
+    """Return the first tab's sheet_id (used when a sheet URL has no ?sheet=XXXX)."""
+    url = "%s/open-apis/sheets/v3/spreadsheets/%s/sheets/query" % (LARK_DOMAIN, sheet_token)
+    _, body = http_get(url, headers={"Authorization": "Bearer " + token})
+    data = json.loads(body)
+    if data.get("code") != 0:
+        raise RuntimeError("Lark sheet metadata failed: %s" % body)
+    sheets = data.get("data", {}).get("sheets", [])
+    if not sheets:
+        raise RuntimeError("Spreadsheet %s has no tabs" % sheet_token)
+    return sheets[0]["sheet_id"]
+
+
+def lark_read_grid(token, sheet_token, tab, rng):
     """Read a range like 'tabid!A1:Z2000' and return the raw 2D values array."""
-    full = "%s!%s" % (LARK_SHEET_TAB, rng)
+    full = "%s!%s" % (tab, rng)
     url = "%s/open-apis/sheets/v2/spreadsheets/%s/values/%s" % (
-        LARK_DOMAIN, LARK_SHEET_TOKEN, urllib.parse.quote(full, safe="!"))
+        LARK_DOMAIN, sheet_token, urllib.parse.quote(full, safe="!"))
     _, body = http_get(url, headers={"Authorization": "Bearer " + token})
     data = json.loads(body)
     if data.get("code") != 0:
@@ -222,8 +243,8 @@ def lark_read_grid(token, rng):
     return data.get("data", {}).get("valueRange", {}).get("values", []) or []
 
 
-def read_template_blocks(token):
-    """Scan the template tab and return an ordered list of encoder blocks:
+def read_template_blocks(token, sheet_token, tab):
+    """Scan a template tab and return an ordered list of encoder blocks:
 
         [{"ip": "10.144.2.51", "rows": {"roomid": 4, "userid": 5, ...}}, ...]
 
@@ -231,7 +252,7 @@ def read_template_blocks(token):
     The IP (column TPL_IP_COL) marks the start of a block; the SDK TRTC parameter
     rows below it belong to that block until the next IP appears.
     """
-    grid = lark_read_grid(token, "A1:Z2000")
+    grid = lark_read_grid(token, sheet_token, tab, "A1:Z2000")
     table_i = _col_to_idx(TPL_TABLE_COL)
     ip_i = _col_to_idx(TPL_IP_COL)
     remark_i = _col_to_idx(TPL_REMARK_COL)
@@ -257,12 +278,12 @@ def read_template_blocks(token):
     return blocks
 
 
-def lark_batch_write(token, value_ranges):
+def lark_batch_write(token, sheet_token, value_ranges):
     """Write many cell ranges in one shot via the sheets batch-update API."""
     if not value_ranges:
         return
     url = "%s/open-apis/sheets/v2/spreadsheets/%s/values_batch_update" % (
-        LARK_DOMAIN, LARK_SHEET_TOKEN)
+        LARK_DOMAIN, sheet_token)
     headers = {"Authorization": "Bearer " + token}
     for i in range(0, len(value_ranges), 100):   # chunk to stay well under API limits
         chunk = value_ranges[i:i + 100]
@@ -272,7 +293,7 @@ def lark_batch_write(token, value_ranges):
             raise RuntimeError("Lark batch write failed: %s" % body)
 
 
-def build_value_ranges(block, streams):
+def build_value_ranges(block, streams, tab):
     """For one encoder block, build the cell ranges that fill its SDK TRTC rows.
 
     streams[0] -> Mainstream, streams[1] -> Substream 1, streams[2] -> Substream 2.
@@ -282,7 +303,7 @@ def build_value_ranges(block, streams):
 
     def row_range(row_num, field):
         vals = [streams[i].get(field, "") if i < len(streams) else "" for i in range(len(stream_cols))]
-        rng = "%s!%s%d:%s%d" % (LARK_SHEET_TAB, first_col, row_num, last_col, row_num)
+        rng = "%s!%s%d:%s%d" % (tab, first_col, row_num, last_col, row_num)
         return {"range": rng, "values": [vals]}
 
     ranges = []
@@ -321,35 +342,94 @@ def _lark_post_message(token, msg_type, content):
         raise RuntimeError("Lark message failed: %s" % body)
 
 
-def build_summary_card(now, ok, total, unreachable, no_trtc):
-    """Build a Lark interactive card. unreachable/no_trtc are lists of (table, ip)."""
-    clean = not unreachable and not no_trtc
-    header_template = "green" if clean else "orange"
-    title = "✅ Encoder Monitor" if clean else "⚠️ Encoder Monitor"
+def parse_sheets():
+    """Parse LARK_SHEETS into [(name, token, tab)]; falls back to the single-sheet env."""
+    entries = []
+    for e in LARK_SHEETS.replace(",", " ").split():
+        name = ""
+        if "=" in e:
+            name, e = e.split("=", 1)
+        tab = ""
+        if "@" in e:
+            e, tab = e.split("@", 1)
+        token = e.strip()
+        if token:
+            entries.append((name.strip() or token[:8], token, tab.strip()))
+    if not entries and LARK_SHEET_TOKEN:
+        entries.append(("sheet", LARK_SHEET_TOKEN, LARK_SHEET_TAB))
+    return entries
 
-    body = ["**%d / %d** encoders filled into the Lark Sheet." % (ok, total),
-            "🕒 %s" % now]
 
-    def section(emoji, label, items):
-        lines = ["", "%s **%s (%d):**" % (emoji, label, len(items))]
-        for table, ip in items:
-            lines.append("- %s  `%s`" % (table or "(no name)", ip))
-        return "\n".join(lines)
+def process_sheet(token, name, sheet_token, tab):
+    """Fill one sheet: read its blocks, curl each encoder, write the values back.
 
-    if unreachable:
-        body.append(section("🔴", "Unreachable", unreachable))
-    if no_trtc:
-        body.append(section("⚪", "No TRTC config", no_trtc))
+    Returns a stats dict {name, total, ok, unreachable[], no_trtc[]}.
+    """
+    if not tab:
+        tab = lark_first_tab(token, sheet_token)   # URL had no ?sheet= -> first tab
+    blocks = read_template_blocks(token, sheet_token, tab)
+    outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
+
+    value_ranges = []
+    ok = 0
+    unreachable = []     # (table, ip) couldn't be curled
+    no_trtc = []         # (table, ip) reachable but no TRTC configured
+    for block in blocks:
+        ip = block["ip"]
+        who = (block.get("table", ""), ip)
+        streams = []
+        reachable = True
+        for out in outputs:
+            try:
+                streams.append(parse_output_config(fetch_output(ip, out)))
+            except Exception as e:
+                reachable = False
+                sys.stderr.write("[%s %s %s out=%s] %s\n" % (name, who[0], ip, out, e))
+                break
+        if not reachable:
+            unreachable.append(who)
+            continue
+        if not any(s.get("RoomID") for s in streams):
+            no_trtc.append(who)
+            sys.stderr.write("[%s %s %s] reachable but no TRTC config\n" % (name, who[0], ip))
+            continue
+        ok += 1
+        value_ranges.extend(build_value_ranges(block, streams, tab))
+
+    lark_batch_write(token, sheet_token, value_ranges)
+    print("[%s] filled %d/%d (%d unreachable, %d no-TRTC)"
+          % (name, ok, len(blocks), len(unreachable), len(no_trtc)))
+    return {"name": name, "total": len(blocks), "ok": ok,
+            "unreachable": unreachable, "no_trtc": no_trtc}
+
+
+def build_summary_card(now, results):
+    """Build a Lark card summarising every sheet (results = list of stat dicts)."""
+    any_issue = any(r.get("error") or r["unreachable"] or r["no_trtc"] for r in results)
+    header_template = "orange" if any_issue else "green"
+    title = "⚠️ Encoder Monitor" if any_issue else "✅ Encoder Monitor"
+
+    def names(items):
+        return ", ".join("%s `%s`" % (t or "?", ip) for t, ip in items)
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 %s" % now}}]
+    for r in results:
+        elements.append({"tag": "hr"})
+        if r.get("error"):
+            content = "**%s** — ❌ %s" % (r["name"], r["error"])
+        else:
+            lines = ["**%s** — filled **%d / %d**" % (r["name"], r["ok"], r["total"])]
+            if r["unreachable"]:
+                lines.append("🔴 Unreachable (%d): %s" % (len(r["unreachable"]), names(r["unreachable"])))
+            if r["no_trtc"]:
+                lines.append("⚪ No TRTC (%d): %s" % (len(r["no_trtc"]), names(r["no_trtc"])))
+            content = "\n".join(lines)
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content}})
 
     return {
         "config": {"wide_screen_mode": True},
-        "header": {
-            "template": header_template,
-            "title": {"tag": "plain_text", "content": title},
-        },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(body)}},
-        ],
+        "header": {"template": header_template, "title": {"tag": "plain_text", "content": title}},
+        "elements": elements,
     }
 
 
@@ -360,50 +440,23 @@ def main():
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     token = None
     try:
-        if not LARK_SHEET_TOKEN or not LARK_SHEET_TAB:
-            raise RuntimeError("Set LARK_OUT_SHEET_TOKEN and LARK_OUT_SHEET_ID (the template sheet)")
+        sheets = parse_sheets()
+        if not sheets:
+            raise RuntimeError("No sheets configured — set LARK_SHEETS (or LARK_OUT_SHEET_TOKEN)")
 
         token = lark_token()
-        blocks = read_template_blocks(token)
-        if not blocks:
-            raise RuntimeError("Found 0 encoder blocks in the template — check TPL_IP_COL / the tab id")
-        print("Found %d encoder block(s) in the template" % len(blocks))
+        results = []
+        for name, sheet_token, tab in sheets:
+            try:
+                results.append(process_sheet(token, name, sheet_token, tab))
+            except Exception as e:
+                # one bad sheet must not stop the others
+                sys.stderr.write("[%s] sheet failed: %s\n" % (name, e))
+                results.append({"name": name, "total": 0, "ok": 0,
+                                "unreachable": [], "no_trtc": [], "error": str(e)})
 
-        outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
-        value_ranges = []
-        ok = 0
-        unreachable = []     # (table, ip) couldn't be curled
-        no_trtc = []         # (table, ip) reachable but no TRTC configured
-        for block in blocks:
-            ip = block["ip"]
-            who = (block.get("table", ""), ip)
-            # one /get_output call per stream: output 0 -> Mainstream, 1 -> Sub1, ...
-            streams = []
-            reachable = True
-            for out in outputs:
-                try:
-                    streams.append(parse_output_config(fetch_output(ip, out)))
-                except Exception as e:
-                    reachable = False
-                    sys.stderr.write("[%s %s output=%s] %s\n" % (who[0], ip, out, e))
-                    break
-            if not reachable:
-                unreachable.append(who)
-                continue
-            if not any(s.get("RoomID") for s in streams):
-                no_trtc.append(who)
-                sys.stderr.write("[%s %s] reachable but no TRTC config\n" % (who[0], ip))
-                continue
-            ok += 1
-            value_ranges.extend(build_value_ranges(block, streams))
-
-        # write everything back to the sheet
-        lark_batch_write(token, value_ranges)
-
-        # send the summary as a Lark card
-        lark_send_card(token, build_summary_card(now, ok, len(blocks), unreachable, no_trtc))
-        print("OK: filled %d/%d encoders (%d unreachable, %d no-TRTC)"
-              % (ok, len(blocks), len(unreachable), len(no_trtc)))
+        lark_send_card(token, build_summary_card(now, results))
+        print("Done: processed %d sheet(s)" % len(results))
 
     except Exception:
         err = traceback.format_exc()
