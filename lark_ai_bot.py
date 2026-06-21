@@ -82,6 +82,11 @@ SYSTEM_PROMPT   = os.environ.get(
 # how many past turns (user+assistant messages) to keep per thread for context
 HISTORY_TURNS   = int(os.environ.get("HISTORY_TURNS", "12"))
 
+# Lark re-delivers un-acked events (at-least-once), and on restart our in-memory
+# de-dup is gone — so it can replay OLD messages. Ignore anything older than this
+# many seconds: real-time chat is always fresh, anything older is a replay.
+MAX_MSG_AGE_SEC = int(os.environ.get("MAX_MSG_AGE_SEC", "120"))
+
 # emoji reactions the bot puts on YOUR message: one when it starts ("got it"),
 # one when it's finished replying ("done"). Set REACTIONS=0 to turn off. The
 # values are Lark emoji_type keys (e.g. OnIt, DONE, THUMBSUP, OK, DoneTick).
@@ -364,6 +369,16 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     message_id = msg.message_id
 
     if _already_seen(message_id):
+        return
+
+    # drop stale/replayed events (create_time is Unix ms) so a restart doesn't
+    # make the bot answer messages from an hour ago
+    try:
+        age = time.time() - int(msg.create_time) / 1000.0
+    except (TypeError, ValueError):
+        age = 0
+    if age > MAX_MSG_AGE_SEC:
+        sys.stderr.write("[skip stale] message_id=%s age=%.0fs\n" % (message_id, age))
         return
 
     if msg.message_type != "text":
