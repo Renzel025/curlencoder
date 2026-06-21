@@ -650,10 +650,24 @@ def build_studio_card(now, results):
         return any(f["missing"] for f in r.get("flat", {}).values())
 
     issues = any(any_issue(r) for r in results)
-    title = "⚠️ Encoder Monitor (studios)" if issues else "✅ Encoder Monitor (studios)"
+    title = ("⚠️ " if issues else "✅ ") + "Encoder Monitor (studios)"
 
-    def names(items):
-        return ", ".join("%s `%s`" % (t or "?", ip) for t, ip in items)
+    def cap(items, n=8):
+        items = list(items)
+        return (items, 0) if len(items) <= n else (items[:n], len(items) - n)
+
+    def ip_list(items):
+        shown, more = cap(items)
+        s = ", ".join("%s `%s`" % (t or "?", ip) for t, ip in shown)
+        return s + (" … +%d more" % more if more else "")
+
+    def code_list(items):
+        shown, more = cap(items)
+        s = ", ".join("`%s`" % c for c in shown)
+        return s + (" … +%d more" % more if more else "")
+
+    def short(label):                       # "lavie/pc" -> "PC"
+        return label.split("/")[-1].upper()
 
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 %s" % now}}]
     for r in results:
@@ -662,17 +676,19 @@ def build_studio_card(now, results):
             elements.append({"tag": "div", "text": {"tag": "lark_md",
                 "content": "**%s** — ❌ %s" % (r["name"], r["error"])}})
             continue
-        lines = ["**%s**" % r["name"]]
+        # one compact stats line:  PC 18/19 · SDK 20/21 · TRTC 37/73 · Agora 37/51
+        stats = ["%s **%d/%d**" % (short(e["tab"]), e["ok"], e["total"]) for e in r.get("encoders", [])]
+        stats += ["%s **%d/%d**" % (which, f["filled"], f["targets"]) for which, f in r.get("flat", {}).items()]
+        lines = ["**%s**" % r["name"], "  ·  ".join(stats)]
+        # then only the problems, each capped to keep the card short
         for e in r.get("encoders", []):
-            lines.append("• %s — filled **%d / %d**" % (e["tab"], e["ok"], e["total"]))
             if e["unreachable"]:
-                lines.append("   🔴 Unreachable: %s" % names(e["unreachable"]))
+                lines.append("🔴 %s unreachable (%d): %s" % (short(e["tab"]), len(e["unreachable"]), ip_list(e["unreachable"])))
             if e["no_trtc"]:
-                lines.append("   ⚪ No TRTC: %s" % names(e["no_trtc"]))
+                lines.append("⚠️ %s no-TRTC (%d): %s" % (short(e["tab"]), len(e["no_trtc"]), ip_list(e["no_trtc"])))
         for which, f in r.get("flat", {}).items():
-            lines.append("• %s tab — filled **%d / %d**" % (which, f["filled"], f["targets"]))
             if f["missing"]:
-                lines.append("   ⚪ No URL for: %s" % ", ".join("`%s`" % c for c in f["missing"]))
+                lines.append("⚪ %s no URL (%d): %s" % (which, len(f["missing"]), code_list(f["missing"])))
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
 
     return {
