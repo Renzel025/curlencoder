@@ -665,24 +665,25 @@ def build_studio_card(now, results):
             elements.append({"tag": "div", "text": {"tag": "lark_md",
                 "content": "**%s** — ❌ %s" % (r["name"], r["error"])}})
             continue
-        # one compact stats line:  PC 18/19 · SDK 20/21 · TRTC 37/73 · Agora 37/51
+        # CAPS studio name + a highlighted (bold/blue) stats line
         stats = ["%s %d/%d" % (short(e["tab"]), e["ok"], e["total"]) for e in r.get("encoders", [])]
         stats += ["%s %d/%d" % (which, f["filled"], f["targets"]) for which, f in r.get("flat", {}).items()]
-        lines = ["**%s**" % r["name"], "  ·  ".join(stats)]
-        # problems — each as a full monospace code block (no truncation)
+        lines = ["<font color='blue'>**%s**</font>" % r["name"].upper(),
+                 "<font color='blue'>**%s**</font>" % "  ·  ".join(stats)]
+        # problems — highlighted header + a full monospace code block (no truncation)
         unreach = ["%-4s %-18s %s" % (short(e["tab"]), t or "?", ip)
                    for e in r.get("encoders", []) for t, ip in e["unreachable"]]
         if unreach:
-            lines.append("🔴 Unreachable (%d)" % len(unreach))
+            lines.append("<font color='red'>**🔴 Unreachable (%d)**</font>" % len(unreach))
             lines.append(block(unreach))
         notrtc = ["%-4s %-18s %s" % (short(e["tab"]), t or "?", ip)
                   for e in r.get("encoders", []) for t, ip in e["no_trtc"]]
         if notrtc:
-            lines.append("⚠️ Reachable but no TRTC config (%d)" % len(notrtc))
+            lines.append("<font color='orange'>**⚠️ Reachable but no TRTC config (%d)**</font>" % len(notrtc))
             lines.append(block(notrtc))
         for which, f in r.get("flat", {}).items():
             if f["missing"]:
-                lines.append("⚪ %s — no URL (%d)" % (which, len(f["missing"])))
+                lines.append("<font color='orange'>**⚪ %s — no URL (%d)**</font>" % (which, len(f["missing"])))
                 lines.append(block(f["missing"]))
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
 
