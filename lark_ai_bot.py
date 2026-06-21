@@ -446,6 +446,7 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
 
     # posted once if/when the model decides to run a tool, so the user gets an
     # instant "on it, checking…" before the (slower) actual work + final answer.
+    announced = set()                        # IPs already announced for this message
     def announce(tool_calls):
         ips = []
         for tc in tool_calls:
@@ -456,7 +457,8 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
                 ip = json.loads(fn.get("arguments") or "{}").get("ip", "")
             except ValueError:
                 ip = ""
-            if ip:
+            if ip and ip not in announced:   # don't re-announce a repeat check
+                announced.add(ip)
                 ips.append(ip)
         # only announce actual encoder checks; stay silent for quick lookups
         # like list_unreachable so the thread isn't cluttered
