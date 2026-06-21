@@ -75,8 +75,12 @@ SYSTEM_PROMPT   = os.environ.get(
     "streaming config. When a user asks you to check, curl, test, or look at an "
     "encoder (or just gives you an IP and asks about it), CALL the check_encoder "
     "tool with that IP instead of explaining how to do it yourself — actually run "
-    "it and report the result. Outputs map to streams: 0=Mainstream, "
-    "1=Substream 1, 2=Substream 2. Answer clearly and concisely in plain text.",
+    "it and report the result. If the user asks about MULTIPLE encoders (several "
+    "IPs, or 'the unreachable ones' that were mentioned earlier), call "
+    "check_encoder for EVERY one of those IPs and report each encoder's result "
+    "separately — do not stop after the first. Outputs map to streams: "
+    "0=Mainstream, 1=Substream 1, 2=Substream 2. Answer clearly and concisely in "
+    "plain text.",
 )
 
 # how many past turns (user+assistant messages) to keep per thread for context
@@ -256,10 +260,10 @@ def llm_chat(messages, on_tools=None):
     `messages` is mutated with the assistant/tool turns; pass a throwaway copy
     (so tool plumbing stays out of the persisted per-thread history).
 
-    `on_tools(tool_calls)` is called once, the first time the model decides to
-    run tools — used to post a "hold on, checking…" notice before the slow work.
+    `on_tools(tool_calls)` is called for EACH round the model runs tools — used
+    to post a "checking…" notice before each batch of (slow) checks, so every
+    encoder it checks is announced, not just the first.
     """
-    notified = False
     for _ in range(5):                       # cap tool round-trips
         body = _llm_request(messages, tools=TOOLS)
         msg = body["choices"][0]["message"]
@@ -267,8 +271,7 @@ def llm_chat(messages, on_tools=None):
         if not tool_calls:
             return (msg.get("content") or "").strip()
 
-        if on_tools and not notified:        # tell the user we're on it (once)
-            notified = True
+        if on_tools:                         # announce this round's checks
             try:
                 on_tools(tool_calls)
             except Exception as e:
