@@ -664,6 +664,10 @@ def build_studio_card(now, results):
     def short(label):                       # "lavie/pc" -> "PC"
         return label.split("/")[-1].upper()
 
+    enc_names = {"pc": "ENCODER (PC)", "sdk": "ENCODER (SDK)-NEW"}
+    def enc_label(label):                   # "lavie/pc" -> "ENCODER (PC)"
+        return enc_names.get(label.split("/")[-1].lower(), label.split("/")[-1].upper())
+
     def block(rows):                        # one item per line (no code fence)
         return "\n".join(rows)
 
@@ -675,10 +679,10 @@ def build_studio_card(now, results):
                 "content": "**%s** — ❌ %s" % (r["name"], r["error"])}})
             continue
         # CAPS studio name + a highlighted (bold/blue) stats line
-        stats = ["%s %d/%d" % (short(e["tab"]), e["ok"], e["total"]) for e in r.get("encoders", [])]
+        stats = ["%s %d/%d" % (enc_label(e["tab"]), e["ok"], e["total"]) for e in r.get("encoders", [])]
         stats += ["%s %d/%d" % (which, f["filled"], f["targets"]) for which, f in r.get("flat", {}).items()]
         lines = ["<font color='blue'>**%s**</font>" % r["name"].upper(),
-                 "<font color='blue'>**%s**</font>" % "  ·  ".join(stats)]
+                 "<font color='blue'>**Sheet records %s**</font>" % "  ·  ".join(stats)]
         # problems — highlighted header + one item per line (no truncation)
         unreach = ["%s · %s · `%s`" % (short(e["tab"]), t or "?", ip)
                    for e in r.get("encoders", []) for t, ip in e["unreachable"]]
