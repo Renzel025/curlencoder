@@ -82,10 +82,13 @@ SYSTEM_PROMPT   = os.environ.get(
     "not stop after the first. To answer questions about a specific encoder's "
     "config (usersig, RoomID, SDKAppID, UserID, PrivateMapKey, Agora/TRTC URL) "
     "when the user names it by CODE (e.g. ELV01_PC) rather than IP, FIRST call "
-    "find_encoder to get its IP, THEN call check_encoder on that IP and report the "
-    "requested field (Mainstream = output 0 unless they ask for a substream). "
-    "Outputs map to streams: 0=Mainstream, 1=Substream 1, 2=Substream 2. Answer "
-    "clearly and concisely in plain text.",
+    "find_encoder to get its IP, THEN call check_encoder on that IP. Then report "
+    "ONLY the specific field they asked for, as ONE short line — e.g. 'trtc' → just "
+    "the TRTC push URL; 'usersig' → just the usersig; 'roomid' → just the RoomID. "
+    "Use the Mainstream output (output 0) unless they explicitly name a substream. "
+    "Do NOT dump the full config or all three streams unless the user explicitly "
+    "asks for everything. Outputs: 0=Mainstream, 1=Substream 1, 2=Substream 2. "
+    "Answer concisely in plain text.",
 )
 
 # how many past turns (user+assistant messages) to keep per thread for context
