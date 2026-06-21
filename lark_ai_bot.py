@@ -296,35 +296,48 @@ _TOOL_DISPATCH = {
 }
 
 
-def build_encoder_update():
-    """Format the last monitor run's recorded / not-recorded tables, per studio.
+def _card(title, template, elements):
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": template, "title": {"tag": "plain_text", "content": title}},
+        "elements": elements,
+    }
+
+
+def build_encoder_update_card():
+    """Build an interactive card of the last run's recorded / not-recorded tables.
 
     Drives the /encoder-update command (deterministic — no LLM).
     """
     data = _load_state()
     if data is None:
-        return "⚠️ No monitor results yet — run the encoder monitor first."
+        return _card("📋 Encoder Update", "orange", [{"tag": "div", "text": {"tag": "lark_md",
+                "content": "⚠️ No monitor results yet — run the encoder monitor first."}}])
     encoders = data.get("encoders", [])
+    now = data.get("time", "?")
     if not encoders:
-        return "No encoders found in the last run (%s)." % data.get("time", "?")
+        return _card("📋 Encoder Update", "orange", [{"tag": "div", "text": {"tag": "lark_md",
+                "content": "No encoders found in the last run (%s)." % now}}])
 
     studios = {}                              # preserve insertion order (py3.7+)
     for e in encoders:
         g = studios.setdefault(e["studio"], {"ok": [], "bad": []})
         (g["ok"] if e.get("status") == "ok" else g["bad"]).append(e)
 
-    lines = ["**📋 Encoder Update** — last run %s" % data.get("time", "?")]
+    any_bad = any(g["bad"] for g in studios.values())
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 last run %s" % now}}]
     for studio, g in studios.items():
-        lines.append("")
-        lines.append("<font color='blue'>**%s**</font>" % studio.upper())
-        lines.append("<font color='green'>**✅ Recorded (%d)**</font>" % len(g["ok"]))
+        elements.append({"tag": "hr"})
+        lines = ["<font color='blue'>**%s**</font>" % studio.upper(),
+                 "<font color='green'>**✅ Recorded (%d)**</font>" % len(g["ok"])]
         if g["ok"]:
             lines.append(", ".join("`%s`" % e["table"] for e in g["ok"]))
         if g["bad"]:
             lines.append("<font color='red'>**❌ Not recorded (%d)**</font>" % len(g["bad"]))
             for e in g["bad"]:
                 lines.append("`%s` (%s) — %s" % (e["table"], e["ip"], e.get("status", "?")))
-    return "\n".join(lines)
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+    return _card("📋 Encoder Update", "orange" if any_bad else "green", elements)
 
 
 # ----------------------------------------------------------------------------
@@ -446,6 +459,25 @@ def reply_in_thread(message_id, text):
         )
 
 
+def reply_card_in_thread(message_id, card):
+    """Post an interactive card as a threaded reply (renders lark_md / colors)."""
+    request = (
+        ReplyMessageRequest.builder()
+        .message_id(message_id)
+        .request_body(
+            ReplyMessageRequestBody.builder()
+            .content(json.dumps(card))
+            .msg_type("interactive")
+            .reply_in_thread(True)
+            .build()
+        )
+        .build()
+    )
+    resp = _client.im.v1.message.reply(request)
+    if not resp.success():
+        sys.stderr.write("[card reply failed] code=%s msg=%s\n" % (resp.code, resp.msg))
+
+
 def add_reaction(message_id, emoji_type):
     """React to a message with a Lark emoji (e.g. 'OnIt', 'DONE').
 
@@ -517,7 +549,7 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     # last monitor run (no LLM, no guessing)
     if user_text.strip().lower() in ("/encoder-update", "/encoder_update", "/encoderupdate"):
         add_reaction(message_id, REACT_ACK)
-        reply_in_thread(message_id, build_encoder_update())
+        reply_card_in_thread(message_id, build_encoder_update_card())
         add_reaction(message_id, REACT_DONE)
         return
 
