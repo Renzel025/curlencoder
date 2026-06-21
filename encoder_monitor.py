@@ -83,6 +83,23 @@ TPL_OUTPUTS      = os.environ.get("TPL_OUTPUTS", "0,1,2")
 
 REQUEST_TIMEOUT  = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 
+# --- Studio mode: one spreadsheet per studio with 4 tabs (PC / SDK / TRTC / Agora) ---
+# Each entry:  name|token|pc_tab|sdk_tab|trtc_tab|agora_tab
+# (entries separated by newline or ';'; leave a tab field empty to skip it.)
+#   - PC + SDK tabs use the SAME block layout as Baccarat.xlsx (existing logic).
+#   - TRTC + Agora tabs are FLAT: col A = room codes (one per line, e.g.
+#     "ELV01_MAIN\nELV01_PC_MAIN"), col B = the URL we fill in for each room.
+# The PC/SDK tabs are curled to learn each room's Agora + TRTC URL, then the
+# TRTC/Agora tabs are filled by matching their col-A room codes to those URLs.
+LARK_STUDIOS     = os.environ.get("LARK_STUDIOS", "")
+# How to fill the TRTC tab's URL:
+#   scrape    = use an rtmp_publish_uri that targets TRTC (host has TRTC_HOST_MATCH);
+#               blank if the encoder exposes none (native-TRTC-SDK boxes show no URL)
+#   construct = build it from the trtc_publish_* creds
+TRTC_MODE        = os.environ.get("TRTC_MODE", "scrape")
+TRTC_RTMP_HOST   = os.environ.get("TRTC_RTMP_HOST", "intl-rtmp.rtc.qq.com")
+TRTC_HOST_MATCH  = os.environ.get("TRTC_HOST_MATCH", "rtc.qq.com")
+
 # matches IPv4 addresses anywhere in a cell's text
 IPV4_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 
@@ -176,15 +193,19 @@ def parse_output_config(xml_text):
         el = root.find(name)
         return (el.text or "").strip() if el is not None and el.text else ""
 
-    # the Agora push link is whichever rtmp_publish_uri_N points at an agora host
+    # one pass over the rtmp_publish_uri_N tags: the Agora link is the one on an
+    # agora host; the (scraped) TRTC link is the one on a TRTC host, if present.
     agora_rtmp = ""
+    trtc_scraped = ""
     for i in range(3):
         uri = tag("rtmp_publish_uri_%d" % i)
-        if "agora" in uri.lower():
+        low = uri.lower()
+        if not agora_rtmp and "agora" in low:
             agora_rtmp = uri
-            break
+        if not trtc_scraped and TRTC_HOST_MATCH in low:
+            trtc_scraped = uri
 
-    return {
+    fields = {
         "RoomID":        tag("trtc_publish_room_id"),
         "UserID":        tag("trtc_publish_user_id"),
         "SDKAppID":      tag("trtc_publish_app_id"),
@@ -192,6 +213,24 @@ def parse_output_config(xml_text):
         "PrivateMapKey": tag("trtc_publish_room_password"),
         "AgoraRTMP":     agora_rtmp,
     }
+    fields["TRTCRTMP"] = build_trtc_url(fields, trtc_scraped)
+    return fields
+
+
+def build_trtc_url(fields, scraped=""):
+    """The TRTC push URL for one output.
+
+    TRTC_MODE=scrape    -> the rtmp_publish_uri that targets TRTC (often empty:
+                           encoders on the native TRTC SDK expose no rtmp URL).
+    TRTC_MODE=construct -> built from the trtc_publish_* creds (raw, unencoded,
+                           to match the encoder's own URL format exactly).
+    """
+    if TRTC_MODE == "construct" and fields.get("RoomID"):
+        return ("rtmp://%s/push/%s?sdkappid=%s&userid=%s&usersig=%s&private_map_key=%s"
+                % (TRTC_RTMP_HOST, fields.get("RoomID", ""), fields.get("SDKAppID", ""),
+                   fields.get("UserID", ""), fields.get("Usersig", ""),
+                   fields.get("PrivateMapKey", "")))
+    return scraped
 
 
 # ----------------------------------------------------------------------------
@@ -466,15 +505,197 @@ def build_summary_card(now, results):
 
 
 # ----------------------------------------------------------------------------
+# Studio mode: one spreadsheet, 4 tabs (PC / SDK = block layout, TRTC / Agora = flat)
+# ----------------------------------------------------------------------------
+def parse_studios():
+    """Parse LARK_STUDIOS into [(name, token, {pc,sdk,trtc,agora})].
+
+    Each entry: name|token|pc_tab|sdk_tab|trtc_tab|agora_tab (tabs optional).
+    """
+    studios = []
+    for entry in LARK_STUDIOS.replace(";", "\n").split("\n"):
+        entry = entry.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        parts = [p.strip() for p in entry.split("|")]
+        if len(parts) < 2 or not parts[1]:
+            continue
+        name = parts[0] or parts[1][:8]
+        token, _ = _split_token_tab(parts[1])      # token half may be a full URL
+        tabs = {}
+        for key, idx in (("pc", 2), ("sdk", 3), ("trtc", 4), ("agora", 5)):
+            if len(parts) > idx and parts[idx]:
+                tabs[key] = parts[idx]
+        studios.append((name, token, tabs))
+    return studios
+
+
+def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
+    """Curl every encoder in a PC/SDK block tab, write its E/F/G back, and record
+    each RoomID's Agora + TRTC URL into the shared room_* maps (for the flat tabs).
+    """
+    blocks = read_template_blocks(token, sheet_token, tab)
+    outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
+    value_ranges, ok, unreachable, no_trtc = [], 0, [], []
+    for block in blocks:
+        ip = block["ip"]
+        who = (block.get("table", ""), ip)
+        streams, reachable = [], True
+        for out in outputs:
+            try:
+                streams.append(parse_output_config(fetch_output(ip, out)))
+            except Exception as e:
+                reachable = False
+                sys.stderr.write("[%s %s out=%s] %s\n" % (label, ip, out, e))
+                break
+        if not reachable:
+            unreachable.append(who)
+            continue
+        if not any(s.get("RoomID") for s in streams):
+            no_trtc.append(who)
+            continue
+        ok += 1
+        value_ranges.extend(build_value_ranges(block, streams, tab))
+        for s in streams:                          # remember each room's URLs
+            rid = s.get("RoomID")
+            if not rid:
+                continue
+            if s.get("AgoraRTMP"):
+                room_agora[rid] = s["AgoraRTMP"]
+            if s.get("TRTCRTMP"):
+                room_trtc[rid] = s["TRTCRTMP"]
+    lark_batch_write(token, sheet_token, value_ranges)
+    return {"tab": label, "total": len(blocks), "ok": ok,
+            "unreachable": unreachable, "no_trtc": no_trtc}
+
+
+def read_flat_targets(token, sheet_token, tab):
+    """For a flat TRTC/Agora tab, return [(row_num, room_code), ...] to fill in col B.
+
+    Col A holds a pair's room codes, one per line (e.g. 'ELV01_MAIN\\nELV01_PC_MAIN'),
+    mapping to consecutive rows from the col-A row down. Row 1 (title) is skipped;
+    any "(ABR)"-style suffix is stripped from a code.
+    """
+    grid = lark_read_grid(token, sheet_token, tab, "A1:B500")
+    targets = []
+    for r, row in enumerate(grid):                 # r 0-indexed; sheet row = r+1
+        if r == 0:                                 # title row (e.g. 'trtc-baccarat')
+            continue
+        a = _cell_text(row[0]).strip() if len(row) > 0 else ""
+        if not a:
+            continue
+        for i, line in enumerate(a.split("\n")):
+            code = re.sub(r"\(.*?\)", "", line).strip()
+            if code:
+                targets.append((r + 1 + i, code))
+    return targets
+
+
+def fill_flat_tab(token, sheet_token, tab, room_to_url):
+    """Fill a flat TRTC/Agora tab's col B from a {room_code: url} map.
+
+    Returns {tab, targets, filled, missing[]}.
+    """
+    targets = read_flat_targets(token, sheet_token, tab)
+    value_ranges, filled, missing = [], 0, []
+    for row_num, code in targets:
+        url = room_to_url.get(code, "")
+        if url:
+            value_ranges.append({"range": "%s!B%d:B%d" % (tab, row_num, row_num),
+                                 "values": [[url]]})
+            filled += 1
+        else:
+            missing.append(code)
+    lark_batch_write(token, sheet_token, value_ranges)
+    return {"tab": tab, "targets": len(targets), "filled": filled, "missing": missing}
+
+
+def process_studio(token, name, sheet_token, tabs):
+    """Fill one studio spreadsheet: PC/SDK encoder tabs, then TRTC/Agora flat tabs."""
+    room_agora, room_trtc = {}, {}
+    encoders = []
+    for which in ("pc", "sdk"):
+        if tabs.get(which):
+            encoders.append(process_encoder_tab(
+                token, "%s/%s" % (name, which), sheet_token, tabs[which],
+                room_agora, room_trtc))
+    flat = {}
+    if tabs.get("trtc"):
+        flat["TRTC"] = fill_flat_tab(token, sheet_token, tabs["trtc"], room_trtc)
+    if tabs.get("agora"):
+        flat["Agora"] = fill_flat_tab(token, sheet_token, tabs["agora"], room_agora)
+    return {"name": name, "encoders": encoders, "flat": flat}
+
+
+def build_studio_card(now, results):
+    """Lark card summarising every studio (encoder tabs + flat TRTC/Agora fills)."""
+    def any_issue(r):
+        if r.get("error"):
+            return True
+        if any(e["unreachable"] or e["no_trtc"] for e in r.get("encoders", [])):
+            return True
+        return any(f["missing"] for f in r.get("flat", {}).values())
+
+    issues = any(any_issue(r) for r in results)
+    title = "⚠️ Encoder Monitor (studios)" if issues else "✅ Encoder Monitor (studios)"
+
+    def names(items):
+        return ", ".join("%s `%s`" % (t or "?", ip) for t, ip in items)
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 %s" % now}}]
+    for r in results:
+        elements.append({"tag": "hr"})
+        if r.get("error"):
+            elements.append({"tag": "div", "text": {"tag": "lark_md",
+                "content": "**%s** — ❌ %s" % (r["name"], r["error"])}})
+            continue
+        lines = ["**%s**" % r["name"]]
+        for e in r.get("encoders", []):
+            lines.append("• %s — filled **%d / %d**" % (e["tab"], e["ok"], e["total"]))
+            if e["unreachable"]:
+                lines.append("   🔴 Unreachable: %s" % names(e["unreachable"]))
+            if e["no_trtc"]:
+                lines.append("   ⚪ No TRTC: %s" % names(e["no_trtc"]))
+        for which, f in r.get("flat", {}).items():
+            lines.append("• %s tab — filled **%d / %d**" % (which, f["filled"], f["targets"]))
+            if f["missing"]:
+                lines.append("   ⚪ No URL for: %s" % ", ".join("`%s`" % c for c in f["missing"]))
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "orange" if issues else "green",
+                   "title": {"tag": "plain_text", "content": title}},
+        "elements": elements,
+    }
+
+
+# ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
 def main():
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     token = None
     try:
+        # Studio mode (LARK_STUDIOS) takes priority: one spreadsheet per studio
+        # with PC/SDK/TRTC/Agora tabs. Falls back to the classic LARK_SHEETS path.
+        studios = parse_studios()
+        if studios:
+            token = lark_token()
+            results = []
+            for name, sheet_token, tabs in studios:
+                try:
+                    results.append(process_studio(token, name, sheet_token, tabs))
+                except Exception as e:
+                    sys.stderr.write("[%s] studio failed: %s\n" % (name, e))
+                    results.append({"name": name, "error": str(e)})
+            lark_send_card(token, build_studio_card(now, results))
+            print("Done: processed %d studio(s)" % len(results))
+            return
+
         sheets = parse_sheets()
         if not sheets:
-            raise RuntimeError("No sheets configured — set LARK_SHEETS (or LARK_OUT_SHEET_TOKEN)")
+            raise RuntimeError("No sheets configured — set LARK_STUDIOS or LARK_SHEETS (or LARK_OUT_SHEET_TOKEN)")
 
         token = lark_token()
         results = []
