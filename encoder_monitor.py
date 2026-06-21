@@ -106,6 +106,9 @@ TRTC_HOST_MATCH  = os.environ.get("TRTC_HOST_MATCH", "rtc.qq.com")
 STATE_FILE       = os.environ.get(
     "STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_run.json"))
 
+# Title shown on the studio-mode summary card (the ✅/⚠️ prefix is added automatically).
+STUDIO_TITLE     = os.environ.get("STUDIO_TITLE", "Baccarat Encoder Monitor (studios)")
+
 # matches IPv4 addresses anywhere in a cell's text
 IPV4_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 
@@ -656,7 +659,7 @@ def build_studio_card(now, results):
         return any(f["missing"] for f in r.get("flat", {}).values())
 
     issues = any(any_issue(r) for r in results)
-    title = ("⚠️ " if issues else "✅ ") + "Encoder Monitor (studios)"
+    title = ("⚠️ " if issues else "✅ ") + STUDIO_TITLE
 
     def short(label):                       # "lavie/pc" -> "PC"
         return label.split("/")[-1].upper()
