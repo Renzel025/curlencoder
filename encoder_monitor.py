@@ -655,8 +655,8 @@ def build_studio_card(now, results):
     def short(label):                       # "lavie/pc" -> "PC"
         return label.split("/")[-1].upper()
 
-    def block(rows):                        # render a monospace code block
-        return "```\n%s\n```" % "\n".join(rows)
+    def block(rows):                        # one item per line (no code fence)
+        return "\n".join(rows)
 
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 %s" % now}}]
     for r in results:
@@ -670,13 +670,13 @@ def build_studio_card(now, results):
         stats += ["%s %d/%d" % (which, f["filled"], f["targets"]) for which, f in r.get("flat", {}).items()]
         lines = ["<font color='blue'>**%s**</font>" % r["name"].upper(),
                  "<font color='blue'>**%s**</font>" % "  ·  ".join(stats)]
-        # problems — highlighted header + a full monospace code block (no truncation)
-        unreach = ["%-4s %-18s %s" % (short(e["tab"]), t or "?", ip)
+        # problems — highlighted header + one item per line (no truncation)
+        unreach = ["%s · %s · `%s`" % (short(e["tab"]), t or "?", ip)
                    for e in r.get("encoders", []) for t, ip in e["unreachable"]]
         if unreach:
             lines.append("<font color='red'>**🔴 Unreachable (%d)**</font>" % len(unreach))
             lines.append(block(unreach))
-        notrtc = ["%-4s %-18s %s" % (short(e["tab"]), t or "?", ip)
+        notrtc = ["%s · %s · `%s`" % (short(e["tab"]), t or "?", ip)
                   for e in r.get("encoders", []) for t, ip in e["no_trtc"]]
         if notrtc:
             lines.append("<font color='orange'>**⚠️ Reachable but no TRTC config (%d)**</font>" % len(notrtc))
@@ -684,7 +684,7 @@ def build_studio_card(now, results):
         for which, f in r.get("flat", {}).items():
             if f["missing"]:
                 lines.append("<font color='orange'>**⚪ %s — no URL (%d)**</font>" % (which, len(f["missing"])))
-                lines.append(block(f["missing"]))
+                lines.append(block("`%s`" % c for c in f["missing"]))
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
 
     return {
