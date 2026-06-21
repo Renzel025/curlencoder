@@ -79,8 +79,13 @@ SYSTEM_PROMPT   = os.environ.get(
     "encoders' (or the ones that failed) WITHOUT giving specific IPs, FIRST call "
     "list_unreachable to get the IPs from the latest monitor run, THEN call "
     "check_encoder for EVERY IP it returns and report each result separately — do "
-    "not stop after the first. Outputs map to streams: 0=Mainstream, "
-    "1=Substream 1, 2=Substream 2. Answer clearly and concisely in plain text.",
+    "not stop after the first. To answer questions about a specific encoder's "
+    "config (usersig, RoomID, SDKAppID, UserID, PrivateMapKey, Agora/TRTC URL) "
+    "when the user names it by CODE (e.g. ELV01_PC) rather than IP, FIRST call "
+    "find_encoder to get its IP, THEN call check_encoder on that IP and report the "
+    "requested field (Mainstream = output 0 unless they ask for a substream). "
+    "Outputs map to streams: 0=Mainstream, 1=Substream 1, 2=Substream 2. Answer "
+    "clearly and concisely in plain text.",
 )
 
 # how many past turns (user+assistant messages) to keep per thread for context
@@ -196,6 +201,27 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_encoder",
+            "description": (
+                "Look up an encoder by its table code / name (e.g. 'ELV01_PC') and "
+                "return its IP, studio and last-run status. Use this when the user "
+                "names an encoder (not an IP) and you need its IP — e.g. to then "
+                "call check_encoder on that IP to read config like usersig, RoomID, "
+                "SDKAppID, UserID or PrivateMapKey."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string",
+                             "description": "Encoder table code or partial name, e.g. ELV01_PC"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 
@@ -243,10 +269,62 @@ def tool_list_unreachable():
             "no_trtc": data.get("no_trtc", [])}
 
 
+def _load_state():
+    """Read the monitor's last-run state file, or return None."""
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def tool_find_encoder(name=""):
+    """Find encoders whose table code matches `name` (case-insensitive substring)."""
+    data = _load_state()
+    if data is None:
+        return {"error": "no monitor results available yet — run the monitor first"}
+    q = (name or "").strip().lower()
+    matches = [e for e in data.get("encoders", []) if q and q in e.get("table", "").lower()]
+    return {"query": name, "matches": matches,
+            "hint": "call check_encoder on a match's ip to read its live config"}
+
+
 _TOOL_DISPATCH = {
     "check_encoder": tool_check_encoder,
     "list_unreachable": tool_list_unreachable,
+    "find_encoder": tool_find_encoder,
 }
+
+
+def build_encoder_update():
+    """Format the last monitor run's recorded / not-recorded tables, per studio.
+
+    Drives the /encoder-update command (deterministic — no LLM).
+    """
+    data = _load_state()
+    if data is None:
+        return "⚠️ No monitor results yet — run the encoder monitor first."
+    encoders = data.get("encoders", [])
+    if not encoders:
+        return "No encoders found in the last run (%s)." % data.get("time", "?")
+
+    studios = {}                              # preserve insertion order (py3.7+)
+    for e in encoders:
+        g = studios.setdefault(e["studio"], {"ok": [], "bad": []})
+        (g["ok"] if e.get("status") == "ok" else g["bad"]).append(e)
+
+    lines = ["**📋 Encoder Update** — last run %s" % data.get("time", "?")]
+    for studio, g in studios.items():
+        lines.append("")
+        lines.append("<font color='blue'>**%s**</font>" % studio.upper())
+        lines.append("<font color='green'>**✅ Recorded (%d)**</font>" % len(g["ok"]))
+        if g["ok"]:
+            lines.append(", ".join("`%s`" % e["table"] for e in g["ok"]))
+        if g["bad"]:
+            lines.append("<font color='red'>**❌ Not recorded (%d)**</font>" % len(g["bad"]))
+            for e in g["bad"]:
+                lines.append("`%s` (%s) — %s" % (e["table"], e["ip"], e.get("status", "?")))
+    return "\n".join(lines)
 
 
 # ----------------------------------------------------------------------------
@@ -433,6 +511,14 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
 
     user_text = _extract_text(msg)
     if not user_text:
+        return
+
+    # slash command: /encoder-update — deterministic summary straight from the
+    # last monitor run (no LLM, no guessing)
+    if user_text.strip().lower() in ("/encoder-update", "/encoder_update", "/encoderupdate"):
+        add_reaction(message_id, REACT_ACK)
+        reply_in_thread(message_id, build_encoder_update())
+        add_reaction(message_id, REACT_DONE)
         return
 
     # "got it" — react the moment we pick the message up

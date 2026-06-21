@@ -458,7 +458,7 @@ def process_sheet(token, name, sheet_token, tab):
     outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
 
     value_ranges = []
-    ok = 0
+    ok_list = []         # (table, ip) filled successfully
     unreachable = []     # (table, ip) couldn't be curled
     no_trtc = []         # (table, ip) reachable but no TRTC configured
     for block in blocks:
@@ -480,14 +480,14 @@ def process_sheet(token, name, sheet_token, tab):
             no_trtc.append(who)
             sys.stderr.write("[%s %s %s] reachable but no TRTC config\n" % (name, who[0], ip))
             continue
-        ok += 1
+        ok_list.append(who)
         value_ranges.extend(build_value_ranges(block, streams, tab))
 
     lark_batch_write(token, sheet_token, value_ranges)
     print("[%s / %s] filled %d/%d (%d unreachable, %d no-TRTC)"
-          % (name, tab_title, ok, len(blocks), len(unreachable), len(no_trtc)))
-    return {"name": name, "tab": tab_title, "total": len(blocks), "ok": ok,
-            "unreachable": unreachable, "no_trtc": no_trtc}
+          % (name, tab_title, len(ok_list), len(blocks), len(unreachable), len(no_trtc)))
+    return {"name": name, "tab": tab_title, "total": len(blocks), "ok": len(ok_list),
+            "ok_list": ok_list, "unreachable": unreachable, "no_trtc": no_trtc}
 
 
 def build_summary_card(now, results):
@@ -555,7 +555,7 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
     """
     blocks = read_template_blocks(token, sheet_token, tab)
     outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
-    value_ranges, ok, unreachable, no_trtc = [], 0, [], []
+    value_ranges, ok_list, unreachable, no_trtc = [], [], [], []
     for block in blocks:
         ip = block["ip"]
         who = (block.get("table", ""), ip)
@@ -573,7 +573,7 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
         if not any(s.get("RoomID") for s in streams):
             no_trtc.append(who)
             continue
-        ok += 1
+        ok_list.append(who)
         value_ranges.extend(build_value_ranges(block, streams, tab))
         for s in streams:                          # remember each room's URLs
             rid = s.get("RoomID")
@@ -584,8 +584,8 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
             if s.get("TRTCRTMP"):
                 room_trtc[rid] = s["TRTCRTMP"]
     lark_batch_write(token, sheet_token, value_ranges)
-    return {"tab": label, "total": len(blocks), "ok": ok,
-            "unreachable": unreachable, "no_trtc": no_trtc}
+    return {"tab": label, "total": len(blocks), "ok": len(ok_list),
+            "ok_list": ok_list, "unreachable": unreachable, "no_trtc": no_trtc}
 
 
 def read_flat_targets(token, sheet_token, tab):
@@ -707,26 +707,32 @@ def write_state(now, results):
     Read by the Lark AI bot's list_unreachable tool. Handles both studio results
     (with an 'encoders' list) and classic per-sheet results.
     """
-    unreachable, no_trtc = [], []
+    encoders = []   # every encoder with its status: ok | unreachable | no_trtc
 
-    def add(dst, studio, tab, items):
+    def collect(studio, tab, items, status):
         for t, ip in items:
-            dst.append({"studio": studio, "tab": tab, "table": t, "ip": ip})
+            encoders.append({"studio": studio, "tab": tab, "table": t,
+                             "ip": ip, "status": status})
 
     for r in results:
         name = r.get("name", "")
-        if "encoders" in r:                         # studio-mode result
-            for e in r["encoders"]:
-                tab = e["tab"].split("/")[-1]
-                add(unreachable, name, tab, e.get("unreachable", []))
-                add(no_trtc, name, tab, e.get("no_trtc", []))
-        else:                                       # classic per-sheet result
-            add(unreachable, name, r.get("tab", ""), r.get("unreachable", []))
-            add(no_trtc, name, r.get("tab", ""), r.get("no_trtc", []))
+        groups = r["encoders"] if "encoders" in r else [r]   # studio vs classic shape
+        for e in groups:
+            tab = e.get("tab", "").split("/")[-1]
+            collect(name, tab, e.get("ok_list", []), "ok")
+            collect(name, tab, e.get("unreachable", []), "unreachable")
+            collect(name, tab, e.get("no_trtc", []), "no_trtc")
 
+    payload = {
+        "time": now,
+        "encoders": encoders,
+        # kept for the bot's list_unreachable tool (derived views)
+        "unreachable": [e for e in encoders if e["status"] == "unreachable"],
+        "no_trtc": [e for e in encoders if e["status"] == "no_trtc"],
+    }
     try:
         with open(STATE_FILE, "w") as f:
-            json.dump({"time": now, "unreachable": unreachable, "no_trtc": no_trtc}, f, indent=2)
+            json.dump(payload, f, indent=2)
     except Exception as e:
         sys.stderr.write("[state write failed] %s\n" % e)
 
