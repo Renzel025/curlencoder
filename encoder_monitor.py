@@ -681,8 +681,8 @@ def build_studio_card(now, results):
         # CAPS studio name + a highlighted (bold/blue) stats line
         stats = ["%s %d/%d" % (enc_label(e["tab"]), e["ok"], e["total"]) for e in r.get("encoders", [])]
         stats += ["%s %d/%d" % (which, f["filled"], f["targets"]) for which, f in r.get("flat", {}).items()]
-        lines = ["<font color='blue'>**%s**</font>" % r["name"].upper(),
-                 "<font color='blue'>**Sheet records %s**</font>" % "  ·  ".join(stats)]
+        lines = ["<font color='blue'>**%s Sheet records**</font>" % r["name"].upper(),
+                 "<font color='blue'>**%s**</font>" % "  ·  ".join(stats)]
         # problems — highlighted header + one item per line (no truncation)
         unreach = ["%s · %s · `%s`" % (short(e["tab"]), t or "?", ip)
                    for e in r.get("encoders", []) for t, ip in e["unreachable"]]
