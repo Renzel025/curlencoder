@@ -257,6 +257,17 @@ def _cell_text(cell):
     return str(cell)
 
 
+def list_tabs(token, sheet_token):
+    """Return [(title, sheet_id), ...] for every tab in a spreadsheet."""
+    url = "%s/open-apis/sheets/v3/spreadsheets/%s/sheets/query" % (LARK_DOMAIN, sheet_token)
+    _, body = http_get(url, headers={"Authorization": "Bearer " + token})
+    data = json.loads(body)
+    if data.get("code") != 0:
+        raise RuntimeError("Lark sheets query failed: %s" % body)
+    return [(s.get("title", ""), s.get("sheet_id", ""))
+            for s in data.get("data", {}).get("sheets", [])]
+
+
 def lark_resolve_tab(token, sheet_token, tab):
     """Return (tab_id, tab_title). If tab is blank, use the spreadsheet's first tab."""
     url = "%s/open-apis/sheets/v3/spreadsheets/%s/sheets/query" % (LARK_DOMAIN, sheet_token)
@@ -677,6 +688,19 @@ def main():
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     token = None
     try:
+        # Utility:  python3 encoder_monitor.py list-tabs [token ...]
+        # Prints each tab's sheet_id + title so you can fill LARK_STUDIOS.
+        # With no token args, lists the spreadsheets from LARK_STUDIOS/LARK_SHEETS.
+        if len(sys.argv) > 1 and sys.argv[1] == "list-tabs":
+            token = lark_token()
+            targets = sys.argv[2:] or [t for _, t, _ in parse_studios()] \
+                or [t for _, t, _ in parse_sheets()]
+            for st in targets:
+                print("\n# spreadsheet %s" % st)
+                for title, sid in list_tabs(token, st):
+                    print("   sheet_id = %-22s  %s" % (sid, title))
+            return
+
         # Studio mode (LARK_STUDIOS) takes priority: one spreadsheet per studio
         # with PC/SDK/TRTC/Agora tabs. Falls back to the classic LARK_SHEETS path.
         studios = parse_studios()
