@@ -578,13 +578,17 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
             continue
         ok_list.append(who)
         value_ranges.extend(build_value_ranges(block, streams, tab))
-        for s in streams:                          # remember each room's URLs
+        # Map each RoomID to its MAINSTREAM URL only. All outputs share the same
+        # RoomID but substreams carry substream UserIDs (e.g. ELV01_360_MAIN), so
+        # keep the FIRST output (Mainstream / output 0) and don't let substreams
+        # overwrite it — the TRTC/Agora tabs reference the mainstream room.
+        for s in streams:
             rid = s.get("RoomID")
             if not rid:
                 continue
-            if s.get("AgoraRTMP"):
+            if s.get("AgoraRTMP") and rid not in room_agora:
                 room_agora[rid] = s["AgoraRTMP"]
-            if s.get("TRTCRTMP"):
+            if s.get("TRTCRTMP") and rid not in room_trtc:
                 room_trtc[rid] = s["TRTCRTMP"]
     lark_batch_write(token, sheet_token, value_ranges)
     return {"tab": label, "total": len(blocks), "ok": len(ok_list),
