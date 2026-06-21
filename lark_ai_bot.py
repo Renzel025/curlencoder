@@ -75,16 +75,21 @@ SYSTEM_PROMPT   = os.environ.get(
     "streaming config. When a user asks you to check, curl, test, or look at an "
     "encoder (or just gives you an IP and asks about it), CALL the check_encoder "
     "tool with that IP instead of explaining how to do it yourself — actually run "
-    "it and report the result. If the user asks about MULTIPLE encoders (several "
-    "IPs, or 'the unreachable ones' that were mentioned earlier), call "
-    "check_encoder for EVERY one of those IPs and report each encoder's result "
-    "separately — do not stop after the first. Outputs map to streams: "
-    "0=Mainstream, 1=Substream 1, 2=Substream 2. Answer clearly and concisely in "
-    "plain text.",
+    "it and report the result. If the user asks to re-check 'the unreachable "
+    "encoders' (or the ones that failed) WITHOUT giving specific IPs, FIRST call "
+    "list_unreachable to get the IPs from the latest monitor run, THEN call "
+    "check_encoder for EVERY IP it returns and report each result separately — do "
+    "not stop after the first. Outputs map to streams: 0=Mainstream, "
+    "1=Substream 1, 2=Substream 2. Answer clearly and concisely in plain text.",
 )
 
 # how many past turns (user+assistant messages) to keep per thread for context
 HISTORY_TURNS   = int(os.environ.get("HISTORY_TURNS", "12"))
+
+# Written by encoder_monitor.py each run; the list_unreachable tool reads it so
+# the bot can re-check "the unreachable encoders". Must match the monitor's STATE_FILE.
+STATE_FILE      = os.environ.get(
+    "STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_run.json"))
 
 # Lark re-delivers un-acked events (at-least-once), and on restart our in-memory
 # de-dup is gone — so it can replay OLD messages. Ignore anything older than this
@@ -95,8 +100,8 @@ MAX_MSG_AGE_SEC = int(os.environ.get("MAX_MSG_AGE_SEC", "120"))
 # one when it's finished replying ("done"). Set REACTIONS=0 to turn off. The
 # values are Lark emoji_type keys (e.g. OnIt, DONE, THUMBSUP, OK, DoneTick).
 REACTIONS_ON    = os.environ.get("REACTIONS", "1").lower() not in ("0", "false", "no", "")
-REACT_ACK       = os.environ.get("REACT_ACK", "OnIt")    # on receive: "got it"
-REACT_DONE      = os.environ.get("REACT_DONE", "DONE")   # after reply: "done"
+REACT_ACK       = os.environ.get("REACT_ACK", "THUMBSUP")  # on receive: "got it"
+REACT_DONE      = os.environ.get("REACT_DONE", "DONE")     # after reply: "done"
 
 # strips Lark's @mention placeholders like "@_user_1" / "@_all" from message text
 MENTION_RE = re.compile(r"@_(?:user_\d+|all)\b")
@@ -176,7 +181,21 @@ TOOLS = [
                 "required": ["ip"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_unreachable",
+            "description": (
+                "Return the encoders that were unreachable (or had no TRTC config) "
+                "in the most recent monitor run, with their table code and IP. Use "
+                "this FIRST when the user asks to re-check / curl 'the unreachable "
+                "encoders' (or 'the ones that failed') without giving specific IPs — "
+                "then call check_encoder for each IP it returns."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -212,7 +231,22 @@ def tool_check_encoder(ip, outputs="0,1,2"):
     return {"ip": ip, "reachable": reachable, "streams": streams}
 
 
-_TOOL_DISPATCH = {"check_encoder": tool_check_encoder}
+def tool_list_unreachable():
+    """Read the monitor's last-run state and return its unreachable / no-TRTC lists."""
+    try:
+        with open(STATE_FILE) as f:
+            data = json.load(f)
+    except Exception as e:
+        return {"error": "no monitor results available yet (%s)" % e}
+    return {"time": data.get("time"),
+            "unreachable": data.get("unreachable", []),
+            "no_trtc": data.get("no_trtc", [])}
+
+
+_TOOL_DISPATCH = {
+    "check_encoder": tool_check_encoder,
+    "list_unreachable": tool_list_unreachable,
+}
 
 
 # ----------------------------------------------------------------------------
@@ -415,10 +449,10 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
                 ip = ""
             if ip:
                 ips.append(ip)
+        # only announce actual encoder checks; stay silent for quick lookups
+        # like list_unreachable so the thread isn't cluttered
         if ips:
             reply_in_thread(message_id, "On it — checking %s now… 🔍" % ", ".join(ips))
-        else:
-            reply_in_thread(message_id, "On it — working on that now… 🔍")
 
     # throwaway copy so tool-call / tool-result turns don't pollute the saved
     # per-thread history (we only persist the user text + final answer)

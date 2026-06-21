@@ -12,3 +12,6 @@ encoder_monitor.env
 __pycache__/
 *.pyc
 .DS_Store
+
+# monitor->bot shared state (contains IPs)
+last_run.json

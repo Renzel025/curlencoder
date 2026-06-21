@@ -100,6 +100,12 @@ TRTC_MODE        = os.environ.get("TRTC_MODE", "construct")
 TRTC_RTMP_HOST   = os.environ.get("TRTC_RTMP_HOST", "intl-rtmp.rtc.qq.com")
 TRTC_HOST_MATCH  = os.environ.get("TRTC_HOST_MATCH", "rtc.qq.com")
 
+# Each run saves its unreachable / no-TRTC encoders here as JSON, so the Lark AI
+# bot (lark_ai_bot.py) can re-check "the unreachable encoders" on request. Both
+# scripts default to <repo>/last_run.json; override with the same STATE_FILE.
+STATE_FILE       = os.environ.get(
+    "STATE_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_run.json"))
+
 # matches IPv4 addresses anywhere in a cell's text
 IPV4_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 
@@ -695,6 +701,36 @@ def build_studio_card(now, results):
     }
 
 
+def write_state(now, results):
+    """Save this run's unreachable / no-TRTC encoders to STATE_FILE (JSON).
+
+    Read by the Lark AI bot's list_unreachable tool. Handles both studio results
+    (with an 'encoders' list) and classic per-sheet results.
+    """
+    unreachable, no_trtc = [], []
+
+    def add(dst, studio, tab, items):
+        for t, ip in items:
+            dst.append({"studio": studio, "tab": tab, "table": t, "ip": ip})
+
+    for r in results:
+        name = r.get("name", "")
+        if "encoders" in r:                         # studio-mode result
+            for e in r["encoders"]:
+                tab = e["tab"].split("/")[-1]
+                add(unreachable, name, tab, e.get("unreachable", []))
+                add(no_trtc, name, tab, e.get("no_trtc", []))
+        else:                                       # classic per-sheet result
+            add(unreachable, name, r.get("tab", ""), r.get("unreachable", []))
+            add(no_trtc, name, r.get("tab", ""), r.get("no_trtc", []))
+
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"time": now, "unreachable": unreachable, "no_trtc": no_trtc}, f, indent=2)
+    except Exception as e:
+        sys.stderr.write("[state write failed] %s\n" % e)
+
+
 # ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
@@ -728,6 +764,7 @@ def main():
                     sys.stderr.write("[%s] studio failed: %s\n" % (name, e))
                     results.append({"name": name, "error": str(e)})
             lark_send_card(token, build_studio_card(now, results))
+            write_state(now, results)
             print("Done: processed %d studio(s)" % len(results))
             return
 
@@ -747,6 +784,7 @@ def main():
                                 "unreachable": [], "no_trtc": [], "error": str(e)})
 
         lark_send_card(token, build_summary_card(now, results))
+        write_state(now, results)
         print("Done: processed %d sheet(s)" % len(results))
 
     except Exception:
