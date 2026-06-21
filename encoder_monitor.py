@@ -524,7 +524,9 @@ def parse_studios():
     Each entry: name|token|pc_tab|sdk_tab|trtc_tab|agora_tab (tabs optional).
     """
     studios = []
-    for entry in LARK_STUDIOS.replace(";", "\n").split("\n"):
+    # entries may be separated by whitespace (space/newline/tab) or ';' — fields
+    # are '|'-delimited so a studio entry never contains whitespace itself.
+    for entry in re.split(r"[\s;]+", LARK_STUDIOS):
         entry = entry.strip()
         if not entry or entry.startswith("#"):
             continue
