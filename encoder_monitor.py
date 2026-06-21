@@ -93,10 +93,10 @@ REQUEST_TIMEOUT  = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 # TRTC/Agora tabs are filled by matching their col-A room codes to those URLs.
 LARK_STUDIOS     = os.environ.get("LARK_STUDIOS", "")
 # How to fill the TRTC tab's URL:
-#   scrape    = use an rtmp_publish_uri that targets TRTC (host has TRTC_HOST_MATCH);
-#               blank if the encoder exposes none (native-TRTC-SDK boxes show no URL)
-#   construct = build it from the trtc_publish_* creds
-TRTC_MODE        = os.environ.get("TRTC_MODE", "scrape")
+#   construct = build it from the parsed trtc_publish_* creds (works for every
+#               encoder, since native-TRTC-SDK boxes expose no rtmp URL to scrape)
+#   scrape    = use an rtmp_publish_uri that targets TRTC (host has TRTC_HOST_MATCH)
+TRTC_MODE        = os.environ.get("TRTC_MODE", "construct")
 TRTC_RTMP_HOST   = os.environ.get("TRTC_RTMP_HOST", "intl-rtmp.rtc.qq.com")
 TRTC_HOST_MATCH  = os.environ.get("TRTC_HOST_MATCH", "rtc.qq.com")
 
