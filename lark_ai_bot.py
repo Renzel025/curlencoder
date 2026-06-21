@@ -298,7 +298,7 @@ def llm_chat(messages, on_tools=None):
     to post a "checking…" notice before each batch of (slow) checks, so every
     encoder it checks is announced, not just the first.
     """
-    for _ in range(5):                       # cap tool round-trips
+    for _ in range(12):                      # cap tool round-trips
         body = _llm_request(messages, tools=TOOLS)
         msg = body["choices"][0]["message"]
         tool_calls = msg.get("tool_calls")
@@ -332,7 +332,16 @@ def llm_chat(messages, on_tools=None):
                 "tool_call_id": tc.get("id"),
                 "content": json.dumps(result),
             })
-    return "I tried a few steps but couldn't finish that — please try rephrasing."
+    # ran out of tool rounds — force one final answer with tools disabled so we
+    # summarise what we already gathered instead of bailing with a generic error
+    try:
+        body = _llm_request(messages, tools=None)
+        final = (body["choices"][0]["message"].get("content") or "").strip()
+        if final:
+            return final
+    except Exception as e:
+        sys.stderr.write("[final summary error] %s\n" % e)
+    return "I checked what I could but couldn't wrap it up cleanly — try asking about one encoder at a time."
 
 
 # ----------------------------------------------------------------------------
