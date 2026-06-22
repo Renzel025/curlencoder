@@ -393,9 +393,12 @@ def build_field_card(field_kw, table_query):
     if not res.get("reachable"):
         return _card("🔎 %s — %s" % (field_kw, enc["table"]), "red", [{"tag": "div", "text": {"tag": "lark_md",
             "content": "🔴 `%s` (%s) is unreachable — can't read live config." % (enc["table"], enc["ip"])}}])
-    lines = ["<font color='blue'>**%s — %s** (%s)</font>" % (field_kw.upper(), enc["table"], enc["ip"])]
+    room = res["streams"][0].get("RoomID", "") if res.get("streams") else ""
+    lines = ["<font color='blue'>**%s — %s**</font>" % (field_kw.upper(), enc["table"]),
+             "RoomID `%s` · %s" % (room or "?", enc["ip"])]
     for s in res.get("streams", []):
-        lines.append("<font color='green'>**%s**</font>" % s.get("stream", "output %s" % s.get("output")))
+        lines.append("<font color='green'>**%s** (UserID `%s`)</font>"
+                     % (s.get("stream", "output %s" % s.get("output")), s.get("UserID") or "?"))
         lines.append("`%s`" % (s.get(key) or "—"))
     return _card("🔎 %s lookup" % field_kw, "green",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
