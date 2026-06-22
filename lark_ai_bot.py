@@ -94,6 +94,11 @@ SYSTEM_PROMPT   = os.environ.get(
 # how many past turns (user+assistant messages) to keep per thread for context
 HISTORY_TURNS   = int(os.environ.get("HISTORY_TURNS", "12"))
 
+# "commands" = ONLY the deterministic commands; anything else -> a help card.
+# "llm"      = also allow free-form chat via the model (less reliable). Default
+# is command-only to avoid the model hallucinating IPs / leaking tool syntax.
+CHAT_MODE       = os.environ.get("CHAT_MODE", "commands")
+
 # Written by encoder_monitor.py each run; the list_unreachable tool reads it so
 # the bot can re-check "the unreachable encoders". Must match the monitor's STATE_FILE.
 STATE_FILE      = os.environ.get(
@@ -424,6 +429,20 @@ def build_recheck_card():
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
 
 
+def build_help_card():
+    """Shown when the message isn't a recognized command (command-only mode)."""
+    fields = " · ".join("`%s`" % k for k in FIELD_KEYS)
+    content = (
+        "I'm not familiar with that request 🤔 — try one of these commands:\n\n"
+        "• `encoder-update` — what was recorded ✅ / not recorded ❌ in the last run\n"
+        "• `recheck` — re-test the encoders that were unreachable\n"
+        "• `<field> <table>` — that field for all 3 streams, e.g. `usersig ELV01_PC`\n"
+        "    fields: %s" % fields
+    )
+    return _card("🤖 Available commands", "blue",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": content}}])
+
+
 # ----------------------------------------------------------------------------
 # LLM Chat Completions (stdlib HTTP) — with a tool-calling loop
 # ----------------------------------------------------------------------------
@@ -667,6 +686,14 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
         add_reaction(message_id, REACT_ACK)
         reply_in_thread(message_id, "On it — re-checking the unreachable encoders… 🔁")
         reply_card_in_thread(message_id, build_recheck_card())
+        add_reaction(message_id, REACT_DONE)
+        return
+
+    # not a known command — in command-only mode, show the help card instead of
+    # the (unreliable) LLM. Set CHAT_MODE=llm to allow free-form chat.
+    if CHAT_MODE != "llm":
+        add_reaction(message_id, REACT_ACK)
+        reply_card_in_thread(message_id, build_help_card())
         add_reaction(message_id, REACT_DONE)
         return
 
