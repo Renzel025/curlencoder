@@ -109,6 +109,10 @@ STATE_FILE       = os.environ.get(
 # Title shown on the studio-mode summary card (the ✅/⚠️ prefix is added automatically).
 STUDIO_TITLE     = os.environ.get("STUDIO_TITLE", "Baccarat Encoder Monitor (studios)")
 
+# Whether to ALSO fill the flat TRTC + Agora tabs. Default OFF — only the
+# Encoder (PC) and Encoder (SDK) tabs are processed. Set FLAT_TABS=1 to re-enable.
+FLAT_TABS        = os.environ.get("FLAT_TABS", "0").lower() in ("1", "true", "yes", "on")
+
 # matches IPv4 addresses anywhere in a cell's text
 IPV4_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 
@@ -655,10 +659,11 @@ def process_studio(token, name, sheet_token, tabs):
                 token, "%s/%s" % (name, which), sheet_token, tabs[which],
                 room_agora, room_trtc))
     flat = {}
-    if tabs.get("trtc"):
-        flat["TRTC"] = fill_flat_tab(token, sheet_token, tabs["trtc"], room_trtc)
-    if tabs.get("agora"):
-        flat["Agora"] = fill_flat_tab(token, sheet_token, tabs["agora"], room_agora)
+    if FLAT_TABS:                                  # off by default — PC/SDK only
+        if tabs.get("trtc"):
+            flat["TRTC"] = fill_flat_tab(token, sheet_token, tabs["trtc"], room_trtc)
+        if tabs.get("agora"):
+            flat["Agora"] = fill_flat_tab(token, sheet_token, tabs["agora"], room_agora)
     return {"name": name, "encoders": encoders, "flat": flat}
 
 
