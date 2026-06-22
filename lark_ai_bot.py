@@ -336,23 +336,36 @@ def build_encoder_update_card():
         return _card("📋 Encoder Update", "orange", [{"tag": "div", "text": {"tag": "lark_md",
                 "content": "No encoders found in the last run (%s)." % now}}])
 
-    studios = {}                              # preserve insertion order (py3.7+)
+    tab_names = {"pc": "ENCODER (PC)", "sdk": "ENCODER (SDK)-NEW",
+                 "trtc": "TRTC", "agora": "Agora"}
+    tab_order = ["pc", "sdk", "trtc", "agora"]
+    status_txt = {"unreachable": "unreachable", "no_trtc": "reachable but no TRTC",
+                  "no_labels": "template missing param labels"}
+
+    # studio -> tab -> {ok, bad}
+    studios = {}
     for e in encoders:
-        g = studios.setdefault(e["studio"], {"ok": [], "bad": []})
+        tabs = studios.setdefault(e["studio"], {})
+        g = tabs.setdefault(e.get("tab", ""), {"ok": [], "bad": []})
         (g["ok"] if e.get("status") == "ok" else g["bad"]).append(e)
 
-    any_bad = any(g["bad"] for g in studios.values())
+    any_bad = any(g["bad"] for tabs in studios.values() for g in tabs.values())
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "🕒 last run %s" % now}}]
-    for studio, g in studios.items():
+    for studio, tabs in studios.items():
         elements.append({"tag": "hr"})
-        lines = ["<font color='blue'>**%s**</font>" % studio.upper(),
-                 "<font color='green'>**✅ Recorded (%d)**</font>" % len(g["ok"])]
-        if g["ok"]:
-            lines.append(", ".join("`%s`" % e["table"] for e in g["ok"]))
-        if g["bad"]:
-            lines.append("<font color='red'>**❌ Not recorded (%d)**</font>" % len(g["bad"]))
-            for e in g["bad"]:
-                lines.append("`%s` (%s) — %s" % (e["table"], e["ip"], e.get("status", "?")))
+        lines = ["<font color='blue'>**%s**</font>" % studio.upper()]
+        ordered = [t for t in tab_order if t in tabs] + [t for t in tabs if t not in tab_order]
+        for tab in ordered:
+            g = tabs[tab]
+            lines.append("▸ **%s**" % tab_names.get(tab, tab.upper()))
+            lines.append("<font color='green'>✅ Recorded (%d)</font>" % len(g["ok"]))
+            if g["ok"]:
+                lines.append(", ".join("`%s`" % e["table"] for e in g["ok"]))
+            if g["bad"]:
+                lines.append("<font color='red'>❌ Not recorded (%d)</font>" % len(g["bad"]))
+                for e in g["bad"]:
+                    lines.append("`%s` (%s) — %s"
+                                 % (e["table"], e["ip"], status_txt.get(e.get("status"), e.get("status", "?"))))
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
     return _card("📋 Encoder Update", "orange" if any_bad else "green", elements)
 
