@@ -539,13 +539,16 @@ def build_help_card():
     """Shown when the message isn't a recognized command (command-only mode)."""
     fields = " · ".join("`%s`" % k for k in FIELD_KEYS)
     content = (
-        "I'm not familiar with that request 🤔 — try one of these:\n\n"
+        "I'm not familiar with that request 🤔 — here's what I can do:\n\n"
         "• `update` — recorded ✅ / not recorded ❌ per studio & tab\n"
-        "• `curl` — re-test the encoders that were unreachable\n"
-        "• `pc` / `sdk` / `trtc` / `agora` — recorded list for that tab\n"
-        "• `pc <table>` / `sdk <table>` — full block (Agora + SDK TRTC, all 3 streams)\n"
-        "• `<field> <table>` — one field, e.g. `usersig ELV01_PC`\n"
-        "    fields: %s" % fields
+        "• `curl` — re-test the encoders that were unreachable\n\n"
+        "Type **PC** or **SDK**, and it will list the encoders that have been recorded "
+        "and those that have not been recorded, based on the tab you enter.\n\n"
+        "If you want to view the recorded details for a specific encoder in a particular "
+        "tab, type the tab then the encoder code.\n"
+        "Example: `PC ENP01`\n"
+        "It will then display all the recorded fields associated with that encoder.\n\n"
+        "fields: %s" % fields
     )
     return _card("🤖 Available commands", "blue",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": content}}])
