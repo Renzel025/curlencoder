@@ -408,11 +408,11 @@ def build_field_card(field_kw, table_query):
             "content": "🔴 `%s` (%s) is unreachable — can't read live config." % (enc["table"], enc["ip"])}}])
     room = res["streams"][0].get("RoomID", "") if res.get("streams") else ""
     lines = ["<font color='blue'>**%s — %s**</font>" % (field_kw.upper(), enc["table"]),
-             "RoomID `%s` · %s" % (room or "?", enc["ip"])]
+             "RoomID %s · %s" % (room or "?", enc["ip"])]
     for s in res.get("streams", []):
-        lines.append("<font color='green'>**%s** (UserID `%s`)</font>"
+        lines.append("<font color='blue'>**%s** (UserID %s)</font>"
                      % (s.get("stream", "output %s" % s.get("output")), s.get("UserID") or "?"))
-        lines.append("`%s`" % (s.get(key) or "—"))
+        lines.append(s.get(key) or "—")
     return _card("🔎 %s lookup" % field_kw, "green",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
 
@@ -524,12 +524,13 @@ def build_block_card(tab, table_query):
     streams = res.get("streams", [])
     lines = ["<font color='blue'>**%s — %s** (%s)</font>" % (name, enc["table"], enc["ip"]),
              "<font color='green'>**Agora**</font>",
-             "`%s`" % ((streams[0].get("AgoraRTMP") if streams else "") or "—"),
+             (streams[0].get("AgoraRTMP") if streams else "") or "—",
              "<font color='green'>**SDK TRTC**</font>"]
     for label in ("RoomID", "UserID", "SDKAppID", "PrivateMapKey", "Usersig"):
         lines.append("**%s**" % label)
         for s in streams:
-            lines.append("%s: `%s`" % (s.get("stream", "output %s" % s.get("output")), s.get(label) or "—"))
+            lines.append("<font color='blue'>**%s:**</font> %s"
+                         % (s.get("stream", "output %s" % s.get("output")), s.get(label) or "—"))
     return _card("🔎 %s block — %s" % (name, enc["table"]), "green",
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
 
@@ -539,8 +540,8 @@ def build_help_card():
     fields = " · ".join("`%s`" % k for k in FIELD_KEYS)
     content = (
         "I'm not familiar with that request 🤔 — try one of these:\n\n"
-        "• `encoder-update` — recorded ✅ / not recorded ❌ per studio & tab\n"
-        "• `recheck` — re-test the encoders that were unreachable\n"
+        "• `update` — recorded ✅ / not recorded ❌ per studio & tab\n"
+        "• `curl` — re-test the encoders that were unreachable\n"
         "• `pc` / `sdk` / `trtc` / `agora` — recorded list for that tab\n"
         "• `pc <table>` / `sdk <table>` — full block (Agora + SDK TRTC, all 3 streams)\n"
         "• `<field> <table>` — one field, e.g. `usersig ELV01_PC`\n"
@@ -776,7 +777,7 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     # "usersig ELV01_PC" and "usersig of ELV01_PC" work).
     parts = user_text.strip().split()
     cmd = parts[0].lower().lstrip("/") if parts else ""
-    if cmd in ("encoder-update", "encoder_update", "encoderupdate"):
+    if cmd in ("update", "encoder-update", "encoder_update", "encoderupdate"):
         add_reaction(message_id, REACT_ACK)
         reply_card_in_thread(message_id, build_encoder_update_card())
         add_reaction(message_id, REACT_DONE)
@@ -804,9 +805,9 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
 
     # re-check the unreachable encoders — explicit command only (so "why is X
     # unreachable?" still goes to normal chat). Deterministic: real IPs, no LLM.
-    if cmd in ("recheck", "recheck-unreachable", "recheck_unreachable"):
+    if cmd in ("curl", "recheck"):
         add_reaction(message_id, REACT_ACK)
-        reply_in_thread(message_id, "On it — re-checking the unreachable encoders… 🔁")
+        reply_in_thread(message_id, "On it — re-curling the unreachable encoders… 🔁")
         reply_card_in_thread(message_id, build_recheck_card())
         add_reaction(message_id, REACT_DONE)
         return
