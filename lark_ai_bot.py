@@ -352,6 +352,50 @@ def build_encoder_update_card():
     return _card("📋 Encoder Update", "orange" if any_bad else "green", elements)
 
 
+# command keyword -> the config field returned by check_encoder's per-stream dict
+FIELD_KEYS = {
+    "agora": "AgoraRTMP", "trtc": "TRTCRTMP", "usersig": "Usersig",
+    "privatemapkey": "PrivateMapKey", "userid": "UserID",
+    "sdkappid": "SDKAppID", "roomid": "RoomID",
+}
+
+
+def _find_one_encoder(table_query):
+    """Best (most specific) encoder match from the last run, or None."""
+    data = _load_state()
+    if not data:
+        return None
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    q = norm(table_query)
+    cands = [e for e in data.get("encoders", [])
+             if q and (q == norm(e.get("table", "")) or norm(e.get("table", "")) in q
+                       or q in norm(e.get("table", "")))]
+    cands.sort(key=lambda e: len(e.get("table", "")), reverse=True)
+    return cands[0] if cands else None
+
+
+def build_field_card(field_kw, table_query):
+    """`<field> <table>` command: curl the encoder live and show that field for
+    Mainstream / Substream 1 / Substream 2. Deterministic — no LLM.
+    """
+    key = FIELD_KEYS[field_kw]
+    enc = _find_one_encoder(table_query)
+    if not enc:
+        return _card("🔎 %s" % field_kw, "orange", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "Couldn't find encoder `%s` in the last run. Run `encoder-update` "
+                       "to refresh the list." % table_query}}])
+    res = tool_check_encoder(enc["ip"])
+    if not res.get("reachable"):
+        return _card("🔎 %s — %s" % (field_kw, enc["table"]), "red", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "🔴 `%s` (%s) is unreachable — can't read live config." % (enc["table"], enc["ip"])}}])
+    lines = ["<font color='blue'>**%s — %s** (%s)</font>" % (field_kw.upper(), enc["table"], enc["ip"])]
+    for s in res.get("streams", []):
+        lines.append("<font color='green'>**%s**</font>" % s.get("stream", "output %s" % s.get("output")))
+        lines.append("`%s`" % (s.get(key) or "—"))
+    return _card("🔎 %s lookup" % field_kw, "green",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
+
+
 # ----------------------------------------------------------------------------
 # LLM Chat Completions (stdlib HTTP) — with a tool-calling loop
 # ----------------------------------------------------------------------------
@@ -573,11 +617,19 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     if not user_text:
         return
 
-    # slash command: /encoder-update — deterministic summary straight from the
-    # last monitor run (no LLM, no guessing)
-    if user_text.strip().lower() in ("/encoder-update", "/encoder_update", "/encoderupdate"):
+    # ---- deterministic commands (no LLM, no guessing) ----
+    # leading '/' optional. first word = command; last word = table code (so both
+    # "usersig ELV01_PC" and "usersig of ELV01_PC" work).
+    parts = user_text.strip().split()
+    cmd = parts[0].lower().lstrip("/") if parts else ""
+    if cmd in ("encoder-update", "encoder_update", "encoderupdate"):
         add_reaction(message_id, REACT_ACK)
         reply_card_in_thread(message_id, build_encoder_update_card())
+        add_reaction(message_id, REACT_DONE)
+        return
+    if cmd in FIELD_KEYS and len(parts) >= 2:
+        add_reaction(message_id, REACT_ACK)
+        reply_card_in_thread(message_id, build_field_card(cmd, parts[-1]))
         add_reaction(message_id, REACT_DONE)
         return
 
