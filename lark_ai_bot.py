@@ -282,14 +282,23 @@ def _load_state():
 
 
 def tool_find_encoder(name=""):
-    """Find encoders whose table code matches `name` (case-insensitive substring)."""
+    """Find encoders by table code, tolerant of RoomID-style queries.
+
+    Ignores case and non-alphanumerics, and matches either direction so e.g.
+    'ELV01_PC_MAIN' (a RoomID) finds table 'ELV01_PC'. Most specific (longest
+    table) first.
+    """
     data = _load_state()
     if data is None:
         return {"error": "no monitor results available yet — run the monitor first"}
-    q = (name or "").strip().lower()
-    matches = [e for e in data.get("encoders", []) if q and q in e.get("table", "").lower()]
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    q = norm(name)
+    matches = [e for e in data.get("encoders", [])
+               if q and (q == norm(e.get("table", "")) or norm(e.get("table", "")) in q
+                         or q in norm(e.get("table", "")))]
+    matches.sort(key=lambda e: len(e.get("table", "")), reverse=True)
     return {"query": name, "matches": matches,
-            "hint": "call check_encoder on a match's ip to read its live config"}
+            "hint": "call check_encoder on the best (first) match's ip for live config"}
 
 
 _TOOL_DISPATCH = {
@@ -510,6 +519,22 @@ def add_reaction(message_id, emoji_type):
         sys.stderr.write("[reaction '%s' error] %s\n" % (emoji_type, e))
 
 
+def _strip_tool_leak(text):
+    """Remove leaked tool-call syntax some models emit as text (Groq llama):
+    lines like 'Function=find_encoder>{...}', '<function>' tags, 'IP=...' lines.
+    """
+    kept = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if s.startswith("Function=") or s.startswith("<function") or s.startswith("</function"):
+            continue
+        if re.match(r"^IP\s*=\s*['\"]", s):
+            continue
+        kept.append(ln)
+    out = "\n".join(kept).replace("<function>", "").replace("</function>", "")
+    return out.strip()
+
+
 def _extract_text(message):
     """Get clean user text from a text message, dropping @mention placeholders."""
     try:
@@ -596,6 +621,7 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
         reply_in_thread(message_id, "⚠️ Sorry, I couldn't reach the AI service just now.")
         return
 
+    answer = _strip_tool_leak(answer) or answer   # drop leaked tool-call syntax
     history.append({"role": "assistant", "content": answer})
     _trim(history)
     reply_in_thread(message_id, answer)
