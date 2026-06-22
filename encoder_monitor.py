@@ -631,17 +631,18 @@ def fill_flat_tab(token, sheet_token, tab, room_to_url):
     Returns {tab, targets, filled, missing[]}.
     """
     targets = read_flat_targets(token, sheet_token, tab)
-    value_ranges, filled, missing = [], 0, []
+    value_ranges, filled_codes, missing = [], [], []
     for row_num, code in targets:
         url = room_to_url.get(code, "")
         if url:
             value_ranges.append({"range": "%s!B%d:B%d" % (tab, row_num, row_num),
                                  "values": [[url]]})
-            filled += 1
+            filled_codes.append(code)
         else:
             missing.append(code)
     lark_batch_write(token, sheet_token, value_ranges)
-    return {"tab": tab, "targets": len(targets), "filled": filled, "missing": missing}
+    return {"tab": tab, "targets": len(targets), "filled": len(filled_codes),
+            "filled_codes": filled_codes, "missing": missing}
 
 
 def process_studio(token, name, sheet_token, tabs):
@@ -748,9 +749,19 @@ def write_state(now, results):
             collect(name, tab, e.get("no_trtc", []), "no_trtc")
             collect(name, tab, e.get("no_rows", []), "no_labels")
 
+    # TRTC / Agora flat tabs: which room codes got a URL (filled) vs didn't (missing)
+    flat = []
+    for r in results:
+        name = r.get("name", "")
+        for which, f in r.get("flat", {}).items():
+            flat.append({"studio": name, "tab": which,
+                         "filled": f.get("filled_codes", []),
+                         "missing": f.get("missing", [])})
+
     payload = {
         "time": now,
         "encoders": encoders,
+        "flat": flat,
         # kept for the bot's list_unreachable tool (derived views)
         "unreachable": [e for e in encoders if e["status"] == "unreachable"],
         "no_trtc": [e for e in encoders if e["status"] == "no_trtc"],

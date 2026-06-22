@@ -445,14 +445,105 @@ def build_recheck_card():
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
 
 
+TAB_NAMES = {"pc": "ENCODER (PC)", "sdk": "ENCODER (SDK)-NEW", "trtc": "TRTC", "agora": "Agora"}
+STATUS_TXT = {"unreachable": "unreachable", "no_trtc": "reachable but no TRTC",
+              "no_labels": "template missing param labels"}
+
+
+def _find_encoder_in_tab(table_query, tab):
+    """Best match for a table code restricted to one tab (pc/sdk)."""
+    data = _load_state()
+    if not data:
+        return None
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    q = norm(table_query)
+    cands = [e for e in data.get("encoders", [])
+             if e.get("tab") == tab and q and
+             (q == norm(e.get("table", "")) or norm(e.get("table", "")) in q or q in norm(e.get("table", "")))]
+    cands.sort(key=lambda e: len(e.get("table", "")), reverse=True)
+    return cands[0] if cands else None
+
+
+def build_tab_list_card(tab):
+    """Recorded / not-recorded for ONE tab (pc/sdk/trtc/agora), grouped by studio."""
+    name = TAB_NAMES.get(tab, tab.upper())
+    data = _load_state()
+    if not data:
+        return _card("📋 %s" % name, "orange", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "No monitor results yet — run the monitor first."}}])
+    studios = {}                                   # studio -> {ok:[str], bad:[str]}
+    if tab in ("pc", "sdk"):
+        for e in data.get("encoders", []):
+            if e.get("tab") != tab:
+                continue
+            g = studios.setdefault(e["studio"], {"ok": [], "bad": []})
+            if e.get("status") == "ok":
+                g["ok"].append("`%s`" % e["table"])
+            else:
+                g["bad"].append("`%s` (%s) — %s" % (e["table"], e["ip"],
+                                STATUS_TXT.get(e.get("status"), e.get("status", "?"))))
+    else:                                          # trtc / agora flat tabs
+        for f in data.get("flat", []):
+            if f.get("tab", "").lower() != tab:
+                continue
+            g = studios.setdefault(f["studio"], {"ok": [], "bad": []})
+            g["ok"] += ["`%s`" % c for c in f.get("filled", [])]
+            g["bad"] += ["`%s`" % c for c in f.get("missing", [])]
+    if not studios:
+        return _card("📋 %s" % name, "orange", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "No data for the %s tab in the last run." % name}}])
+    any_bad = any(g["bad"] for g in studios.values())
+    elements = [{"tag": "div", "text": {"tag": "lark_md",
+                 "content": "🕒 last run %s · **%s**" % (data.get("time", "?"), name)}}]
+    for studio, g in studios.items():
+        elements.append({"tag": "hr"})
+        lines = ["<font color='blue'>**%s**</font>" % studio.upper(),
+                 "<font color='green'>✅ Recorded (%d)</font>" % len(g["ok"])]
+        if g["ok"]:
+            lines.append(", ".join(g["ok"]))
+        if g["bad"]:
+            lines.append("<font color='red'>❌ Not recorded (%d)</font>" % len(g["bad"]))
+            lines += g["bad"]
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+    return _card("📋 %s — recorded" % name, "orange" if any_bad else "green", elements)
+
+
+def build_block_card(tab, table_query):
+    """Full block for one encoder on a pc/sdk tab: Agora + SDK TRTC
+    (RoomID/UserID/SDKAppID/PrivateMapKey/Usersig) across all 3 streams. Live curl.
+    """
+    name = TAB_NAMES.get(tab, tab.upper())
+    enc = _find_encoder_in_tab(table_query, tab)
+    if not enc:
+        return _card("🔎 %s" % name, "orange", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "Couldn't find `%s` on the %s tab in the last run." % (table_query, name)}}])
+    res = tool_check_encoder(enc["ip"])
+    if not res.get("reachable"):
+        return _card("🔎 %s — %s" % (name, enc["table"]), "red", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "🔴 `%s` (%s) is unreachable." % (enc["table"], enc["ip"])}}])
+    streams = res.get("streams", [])
+    lines = ["<font color='blue'>**%s — %s** (%s)</font>" % (name, enc["table"], enc["ip"]),
+             "<font color='green'>**Agora**</font>",
+             "`%s`" % ((streams[0].get("AgoraRTMP") if streams else "") or "—"),
+             "<font color='green'>**SDK TRTC**</font>"]
+    for label in ("RoomID", "UserID", "SDKAppID", "PrivateMapKey", "Usersig"):
+        lines.append("**%s**" % label)
+        for s in streams:
+            lines.append("%s: `%s`" % (s.get("stream", "output %s" % s.get("output")), s.get(label) or "—"))
+    return _card("🔎 %s block — %s" % (name, enc["table"]), "green",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
+
+
 def build_help_card():
     """Shown when the message isn't a recognized command (command-only mode)."""
     fields = " · ".join("`%s`" % k for k in FIELD_KEYS)
     content = (
-        "I'm not familiar with that request 🤔 — try one of these commands:\n\n"
-        "• `encoder-update` — what was recorded ✅ / not recorded ❌ in the last run\n"
+        "I'm not familiar with that request 🤔 — try one of these:\n\n"
+        "• `encoder-update` — recorded ✅ / not recorded ❌ per studio & tab\n"
         "• `recheck` — re-test the encoders that were unreachable\n"
-        "• `<field> <table>` — that field for all 3 streams, e.g. `usersig ELV01_PC`\n"
+        "• `pc` / `sdk` / `trtc` / `agora` — recorded list for that tab\n"
+        "• `pc <table>` / `sdk <table>` — full block (Agora + SDK TRTC, all 3 streams)\n"
+        "• `<field> <table>` — one field, e.g. `usersig ELV01_PC`\n"
         "    fields: %s" % fields
     )
     return _card("🤖 Available commands", "blue",
@@ -690,9 +781,24 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
         reply_card_in_thread(message_id, build_encoder_update_card())
         add_reaction(message_id, REACT_DONE)
         return
-    if cmd in FIELD_KEYS and len(parts) >= 2:
+    arg = parts[-1] if len(parts) >= 2 else None
+    # tab commands: `pc`/`sdk`/`trtc`/`agora` alone -> recorded list for that tab;
+    # `pc <table>`/`sdk <table>` -> full block; `trtc <room>`/`agora <table>` -> URL
+    if cmd in ("pc", "sdk", "trtc", "agora"):
         add_reaction(message_id, REACT_ACK)
-        reply_card_in_thread(message_id, build_field_card(cmd, parts[-1]))
+        if arg is None:
+            card = build_tab_list_card(cmd)
+        elif cmd in ("pc", "sdk"):
+            card = build_block_card(cmd, arg)
+        else:
+            card = build_field_card(cmd, arg)
+        reply_card_in_thread(message_id, card)
+        add_reaction(message_id, REACT_DONE)
+        return
+    # single-field lookups: usersig/userid/sdkappid/privatemapkey/roomid <table>
+    if cmd in FIELD_KEYS and arg:
+        add_reaction(message_id, REACT_ACK)
+        reply_card_in_thread(message_id, build_field_card(cmd, arg))
         add_reaction(message_id, REACT_DONE)
         return
 
