@@ -661,11 +661,9 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
         add_reaction(message_id, REACT_DONE)
         return
 
-    # re-check the unreachable encoders — deterministic (real IPs from last run),
-    # so it never hallucinates/loops like the LLM tool flow did
-    low = user_text.lower()
-    if cmd == "recheck" or ("unreachable" in low
-                            and any(w in low for w in ("recheck", "re-check", "curl", "check", "again", "ping", "retry"))):
+    # re-check the unreachable encoders — explicit command only (so "why is X
+    # unreachable?" still goes to normal chat). Deterministic: real IPs, no LLM.
+    if cmd in ("recheck", "recheck-unreachable", "recheck_unreachable"):
         add_reaction(message_id, REACT_ACK)
         reply_in_thread(message_id, "On it — re-checking the unreachable encoders… 🔁")
         reply_card_in_thread(message_id, build_recheck_card())
