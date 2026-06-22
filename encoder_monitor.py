@@ -558,7 +558,7 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
     """
     blocks = read_template_blocks(token, sheet_token, tab)
     outputs = [o.strip() for o in TPL_OUTPUTS.split(",") if o.strip()]
-    value_ranges, ok_list, unreachable, no_trtc = [], [], [], []
+    value_ranges, ok_list, unreachable, no_trtc, no_rows = [], [], [], [], []
     for block in blocks:
         ip = block["ip"]
         who = (block.get("table", ""), ip)
@@ -576,7 +576,14 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
         if not any(s.get("RoomID") for s in streams):
             no_trtc.append(who)
             continue
-        ok_list.append(who)
+        # reachable WITH TRTC config — but only "recorded" if the template has the
+        # RoomID/UserID/... labels in the param column to write into. Missing labels
+        # (e.g. an incomplete SDK tab) => nowhere to write, so flag it instead of
+        # falsely counting it as filled. (The Agora row, found by remark, still fills.)
+        if block.get("rows"):
+            ok_list.append(who)
+        else:
+            no_rows.append(who)
         value_ranges.extend(build_value_ranges(block, streams, tab))
         # Map each RoomID to its MAINSTREAM URL only. All outputs share the same
         # RoomID but substreams carry substream UserIDs (e.g. ELV01_360_MAIN), so
@@ -592,7 +599,8 @@ def process_encoder_tab(token, label, sheet_token, tab, room_agora, room_trtc):
                 room_trtc[rid] = s["TRTCRTMP"]
     lark_batch_write(token, sheet_token, value_ranges)
     return {"tab": label, "total": len(blocks), "ok": len(ok_list),
-            "ok_list": ok_list, "unreachable": unreachable, "no_trtc": no_trtc}
+            "ok_list": ok_list, "unreachable": unreachable, "no_trtc": no_trtc,
+            "no_rows": no_rows}
 
 
 def read_flat_targets(token, sheet_token, tab):
@@ -658,7 +666,7 @@ def build_studio_card(now, results):
     def any_issue(r):
         if r.get("error"):
             return True
-        if any(e["unreachable"] or e["no_trtc"] for e in r.get("encoders", [])):
+        if any(e["unreachable"] or e["no_trtc"] or e.get("no_rows") for e in r.get("encoders", [])):
             return True
         return any(f["missing"] for f in r.get("flat", {}).values())
 
@@ -698,6 +706,11 @@ def build_studio_card(now, results):
         if notrtc:
             lines.append("<font color='orange'>**⚠️ Reachable but no TRTC config (%d)**</font>" % len(notrtc))
             lines.append(block(notrtc))
+        norows = ["%s · %s · `%s`" % (short(e["tab"]), t or "?", ip)
+                  for e in r.get("encoders", []) for t, ip in e.get("no_rows", [])]
+        if norows:
+            lines.append("<font color='red'>**⚠️ Template missing param labels — TRTC NOT written (%d)**</font>" % len(norows))
+            lines.append(block(norows))
         for which, f in r.get("flat", {}).items():
             if f["missing"]:
                 lines.append("<font color='orange'>**⚪ %s — no URL (%d)**</font>" % (which, len(f["missing"])))
@@ -733,6 +746,7 @@ def write_state(now, results):
             collect(name, tab, e.get("ok_list", []), "ok")
             collect(name, tab, e.get("unreachable", []), "unreachable")
             collect(name, tab, e.get("no_trtc", []), "no_trtc")
+            collect(name, tab, e.get("no_rows", []), "no_labels")
 
     payload = {
         "time": now,
