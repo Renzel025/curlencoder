@@ -396,6 +396,34 @@ def build_field_card(field_kw, table_query):
                  [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
 
 
+def build_recheck_card():
+    """Re-curl every encoder that was unreachable in the last run. Deterministic —
+    uses the real IPs from last_run.json, never the LLM (no hallucinated IPs).
+    """
+    data = _load_state()
+    if not data:
+        return _card("🔁 Recheck", "orange", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "No monitor results yet — run `encoder-update` first."}}])
+    targets = data.get("unreachable", [])
+    if not targets:
+        return _card("🔁 Recheck unreachable", "green", [{"tag": "div", "text": {"tag": "lark_md",
+            "content": "✅ No unreachable encoders in the last run (%s)." % data.get("time", "?")}}])
+
+    now_ok, still = [], []
+    for e in targets:
+        (now_ok if tool_check_encoder(e["ip"]).get("reachable") else still).append(e)
+
+    lines = []
+    if now_ok:
+        lines.append("<font color='green'>**✅ Now reachable (%d)**</font>" % len(now_ok))
+        lines += ["`%s` (%s)" % (e["table"], e["ip"]) for e in now_ok]
+    if still:
+        lines.append("<font color='red'>**🔴 Still unreachable (%d)**</font>" % len(still))
+        lines += ["`%s` (%s)" % (e["table"], e["ip"]) for e in still]
+    return _card("🔁 Recheck unreachable", "green" if not still else "orange",
+                 [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}])
+
+
 # ----------------------------------------------------------------------------
 # LLM Chat Completions (stdlib HTTP) — with a tool-calling loop
 # ----------------------------------------------------------------------------
@@ -630,6 +658,17 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
     if cmd in FIELD_KEYS and len(parts) >= 2:
         add_reaction(message_id, REACT_ACK)
         reply_card_in_thread(message_id, build_field_card(cmd, parts[-1]))
+        add_reaction(message_id, REACT_DONE)
+        return
+
+    # re-check the unreachable encoders — deterministic (real IPs from last run),
+    # so it never hallucinates/loops like the LLM tool flow did
+    low = user_text.lower()
+    if cmd == "recheck" or ("unreachable" in low
+                            and any(w in low for w in ("recheck", "re-check", "curl", "check", "again", "ping", "retry"))):
+        add_reaction(message_id, REACT_ACK)
+        reply_in_thread(message_id, "On it — re-checking the unreachable encoders… 🔁")
+        reply_card_in_thread(message_id, build_recheck_card())
         add_reaction(message_id, REACT_DONE)
         return
 
