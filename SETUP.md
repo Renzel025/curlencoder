@@ -191,8 +191,33 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now lark-ai-bot
 journalctl -u lark-ai-bot -f                        # watch logs
 ```
-LLM (for optional chat) is Groq via OpenAI-compatible API:
-`OPENAI_BASE=https://api.groq.com/openai/v1`, `OPENAI_MODEL=llama-3.3-70b-versatile`.
+### 6. Optional — free-form chat via Groq (LLM)
+
+The bot is **command-only by default** (`CHAT_MODE=commands`) and needs **NO LLM key** —
+all the commands (`update`, `curl`, `pc`, `sdk`, field lookups) are deterministic.
+Enable an LLM only if you want it to answer free-form questions too.
+
+We use **Groq** (free, OpenAI-compatible API):
+
+1. Get a key at <https://console.groq.com/keys> (starts `gsk_...`).
+2. In `lark_ai_bot.env`:
+   ```bash
+   export CHAT_MODE="llm"
+   export OPENAI_API_KEY="gsk_...your_groq_key..."
+   export OPENAI_BASE="https://api.groq.com/openai/v1"
+   export OPENAI_MODEL="llama-3.3-70b-versatile"   # or llama-3.1-8b-instant (higher rate limits)
+   ```
+3. `sudo systemctl restart lark-ai-bot`
+
+Notes:
+- The vars are named `OPENAI_*` but point at **Groq**. Any OpenAI-compatible API works
+  — for real OpenAI: `OPENAI_BASE=https://api.openai.com/v1`, key `sk-...`, model `gpt-4o-mini`.
+- **Commands stay deterministic regardless of `CHAT_MODE`** — the LLM only handles
+  messages that aren't a known command.
+- Groq's free tier rate-limits; if you see "couldn't reach the AI service", switch to
+  `llama-3.1-8b-instant` or send fewer messages.
+- Groq sits behind Cloudflare — the bot already sends a User-Agent header to avoid the
+  `403 error code: 1010` block.
 
 ### Deploy rule (this bites everyone)
 > **`git pull` updates files; the running bot only loads them on restart.**
