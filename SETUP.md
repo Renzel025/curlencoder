@@ -92,10 +92,33 @@ default (`CHAT_MODE=commands`); set `CHAT_MODE=llm` to allow the Groq model to a
 
 ## Setup
 
-### 1. Files on the server
+### 1. Get the repo onto the server
+
+Repo: **`github.com/Renzel025/curlencoder`**, deployed at **`/opt/curlencoder`**.
+
+**First time — clone:**
+```bash
+sudo yum install -y git python38                 # prereqs (or apt: git python3.8)
+cd /opt
+sudo git clone https://github.com/Renzel025/curlencoder.git
+cd /opt/curlencoder
+```
+If the repo is private, clone with a GitHub Personal Access Token (then `git pull`
+reuses it):
+```bash
+sudo git clone https://<YOUR_TOKEN>@github.com/Renzel025/curlencoder.git /opt/curlencoder
+```
+
+**Later — update:**
+```bash
+cd /opt/curlencoder && git pull
+sudo systemctl restart lark-ai-bot               # bot must reload; cron picks up new code itself
+```
+
+**Create the secret env files** (one time, from the templates — they're gitignored,
+so `git pull` never touches them):
 ```bash
 cd /opt/curlencoder
-git pull                                  # or git clone the repo here the first time
 cp encoder_monitor.env.example encoder_monitor.env && chmod 600 encoder_monitor.env
 cp lark_ai_bot.env.example     lark_ai_bot.env     && chmod 600 lark_ai_bot.env
 ```
