@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encoder Monitor + Lark Bot — Architecture</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#11141b; --ink:#e7eaf0; --muted:#8b93a7;
+    --lark:#a78bfa; --mon:#2dd4bf; --bot:#60a5fa; --state:#f59e0b;
+    --enc:#9aa3b2; --groq:#fb7185; --line:#3a4150;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:radial-gradient(1200px 700px at 50% -10%,#151a24,var(--bg));
+    color:var(--ink); font-family:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+    padding:40px 16px 60px;
+  }
+  .wrap{max-width:980px;margin:0 auto}
+  .eyebrow{text-align:center;letter-spacing:.35em;color:var(--muted);font-size:11px;margin:0 0 6px}
+  h1{text-align:center;font-weight:600;font-size:26px;margin:0 0 34px;letter-spacing:.02em}
+  .box{
+    background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0));
+    border:1px solid var(--line); border-radius:14px; padding:18px 20px; text-align:center;
+  }
+  .box h2{margin:0 0 6px;font-size:17px;font-weight:600}
+  .box p{margin:2px 0;color:var(--muted);font-size:12.5px;line-height:1.5}
+  .tags{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .tag{border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:11px;color:var(--muted)}
+  .accent-lark{border-color:rgba(167,139,250,.5);box-shadow:0 0 0 1px rgba(167,139,250,.08) inset}
+  .accent-lark h2{color:var(--lark)} .accent-lark .tag{border-color:rgba(167,139,250,.45);color:#c4b5fd}
+  .accent-mon{border-color:rgba(45,212,191,.45)} .accent-mon h2{color:var(--mon)} .accent-mon .tag{border-color:rgba(45,212,191,.4);color:#5eead4}
+  .accent-bot{border-color:rgba(96,165,250,.45)} .accent-bot h2{color:var(--bot)} .accent-bot .tag{border-color:rgba(96,165,250,.4);color:#93c5fd}
+  .accent-state{border-color:rgba(245,158,11,.45)} .accent-state h2{color:var(--state)} .accent-state p{color:#d9b67a}
+  .accent-enc{border-color:rgba(154,163,178,.4)} .accent-enc h2{color:var(--enc)}
+  .accent-groq{border-color:rgba(251,113,133,.45);border-style:dashed} .accent-groq h2{color:var(--groq)} .accent-groq .tag{border-color:rgba(251,113,133,.4);color:#fda4af}
+
+  .conn{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px;letter-spacing:.12em;padding:10px 60px}
+  .conn span{flex:1}
+  .conn .r{text-align:right}
+  .center-label{text-align:center;color:var(--muted);font-size:11px;letter-spacing:.14em;padding:10px 0}
+  .arrow{display:block;text-align:center;color:var(--line);font-size:18px;line-height:1}
+  .mid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  .botcol{display:flex;flex-direction:column;gap:0}
+  .groq-link{text-align:center;color:var(--muted);font-size:10.5px;letter-spacing:.1em;padding:8px 0 6px}
+  .narrow{max-width:520px;margin:0 auto}
+  .legend{margin-top:34px;border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:11.5px;line-height:1.7;text-align:center}
+  .legend b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">SYSTEM ARCHITECTURE</p>
+  <h1>Encoder Monitor + Lark Bot</h1>
+
+  <!-- Lark -->
+  <div class="box accent-lark">
+    <h2>Lark — casinoplus.sg.larksuite.com</h2>
+    <p>OTE group chat &nbsp;·&nbsp; per-studio 4-tab spreadsheets</p>
+    <div class="tags">
+      <span class="tag">Encoder (PC)</span>
+      <span class="tag">Encoder (SDK)</span>
+      <span class="tag">TRTC</span>
+      <span class="tag">Agora</span>
+    </div>
+  </div>
+
+  <div class="conn">
+    <span>↑ posts card · fills PC + SDK tabs</span>
+    <span class="r">↓ @mention commands · ↑ replies</span>
+  </div>
+
+  <!-- monitor + bot -->
+  <div class="mid">
+    <div class="box accent-mon">
+      <h2>encoder_monitor.py</h2>
+      <p>curls encoders → fills PC/SDK sheets → posts summary card</p>
+      <div class="tags"><span class="tag">cron · Tue/Thu 06:59</span><span class="tag">REST</span></div>
+    </div>
+
+    <div class="botcol">
+      <div class="box accent-bot">
+        <h2>lark_ai_bot.py</h2>
+        <p>answers @mention commands (update / curl / pc / sdk / field lookups)</p>
+        <div class="tags"><span class="tag">systemd · always on</span><span class="tag">WebSocket ← events</span></div>
+      </div>
+      <div class="groq-link">│ HTTPS · OpenAI-compatible · optional (CHAT_MODE=llm)<br>▼</div>
+      <div class="box accent-groq">
+        <h2>Groq LLM API</h2>
+        <p>api.groq.com/openai/v1 · llama-3.x</p>
+        <div class="tags"><span class="tag">free-form chat only</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn">
+    <span>↓ writes</span>
+    <span class="r">reads ↑</span>
+  </div>
+
+  <!-- state -->
+  <div class="box accent-state narrow">
+    <h2>/opt/curlencoder/last_run.json</h2>
+    <p>every encoder — studio / tab / ip / status</p>
+  </div>
+
+  <div class="center-label">↓ both curl encoders · HTTP digest auth</div>
+
+  <!-- encoders -->
+  <div class="box accent-enc narrow">
+    <h2>Encoders</h2>
+    <p>http://&lt;ip&gt;/get_output?input=0&amp;output=0/1/2</p>
+    <div class="tags"><span class="tag">HTTP digest auth</span></div>
+  </div>
+
+  <div class="legend">
+    <b>Solid</b> = always active &nbsp;·&nbsp; <b>Dashed (Groq)</b> = optional, only when <b>CHAT_MODE=llm</b><br>
+    Bot ↔ Lark: <b>WebSocket</b> for incoming @mentions, <b>REST</b> for replies/reactions &nbsp;·&nbsp;
+    Monitor → Lark: <b>REST</b> only &nbsp;·&nbsp; both → encoders: <b>HTTP digest</b>
+  </div>
+</div>
+</body>
+</html>
