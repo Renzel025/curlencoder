@@ -1,72 +1,79 @@
-# Lark AI Bot — setup & operations
+# Lark Bot — setup & operations
 
-An AI chatbot for Lark: DM it or @mention it in a group, and it replies in-thread
-with an answer from an LLM (Groq or OpenAI). Code: [`lark_ai_bot.py`](lark_ai_bot.py).
+A **command bot** for the OTE Lark group: @mention it with a command and it replies
+with a card. Code: [`lark_ai_bot.py`](lark_ai_bot.py).
 
-It uses Lark's **long-connection (WebSocket)** event mode — **no webhook / no public
-URL needed.** Reuses the SAME Lark Custom App as `encoder_monitor.py`.
+By default it is **command-only** (no LLM) — unknown messages get a help card. Set
+`CHAT_MODE=llm` to also allow free-form chat via Groq. It uses Lark's
+**long-connection (WebSocket)** mode — **no webhook needed** — and the **same Lark
+app** as `encoder_monitor.py`. It reads the monitor's `last_run.json` and curls
+encoders live to answer.
+
+---
+
+## Commands (@mention the bot; case-insensitive)
+
+| Command | What it does |
+|---|---|
+| `update` | recorded ✅ / not-recorded ❌ per studio & tab (from the last monitor run) |
+| `curl` | re-curl every encoder that was unreachable; reports now-reachable vs still-down |
+| `pc` / `sdk` | list recorded / not-recorded encoders on that tab |
+| `trtc` / `agora` | list rooms that got a URL vs missing (only if the monitor ran with `FLAT_TABS=1`) |
+| `pc ENP01_PC` / `sdk ENP01` | **full block** — Agora + SDK TRTC (RoomID/UserID/SDKAppID/PrivateMapKey/Usersig) across Mainstream / Substream 1 / Substream 2 |
+| `usersig ELV01_PC` | one field across all 3 streams (also `userid`, `sdkappid`, `privatemapkey`, `roomid`) |
+| `trtc ENP01_MAIN` / `agora ENP01_PC` | the single TRTC / Agora URL |
+
+- **Listings** (`update`, `pc`, `sdk`, `trtc`, `agora`) read `last_run.json` (last monitor run).
+- **Lookups** (`pc/sdk <table>`, field commands) curl the encoder **live** → current values.
+- Tab-scoped matching: `sdk ENP01` finds the SDK `ENP01` (not `ENP01_PC`).
+- All commands are deterministic (no LLM) → no hallucinated IPs or leaked tool syntax.
 
 ---
 
 ## 1. One-time install on the server
 
-The bot needs **Python 3.8+** (the system `python3` is 3.6 — too old for the Lark
-SDK, so we use a dedicated venv and leave the system Python alone for the cron job).
+The bot needs **Python 3.8+** (system `python3` is 3.6 — too old for `lark-oapi`),
+so it runs in a dedicated venv. The cron monitor keeps using system Python.
 
 ```bash
 cd /opt/curlencoder
 git pull
-
-# create the bot's venv (only once)
-python3.8 -m venv /opt/curlencoder/botenv
+python3.8 -m venv /opt/curlencoder/botenv          # one time
 /opt/curlencoder/botenv/bin/pip install -r requirements.txt
-
-# secrets (gitignored — never committed)
-cp lark_ai_bot.env.example lark_ai_bot.env
-chmod 600 lark_ai_bot.env
-nano lark_ai_bot.env      # fill in the values below
+cp lark_ai_bot.env.example lark_ai_bot.env && chmod 600 lark_ai_bot.env
+nano lark_ai_bot.env
 ```
 
-### What to put in `lark_ai_bot.env`
+### `lark_ai_bot.env`
 | Var | Value |
 |-----|-------|
-| `LARK_APP_ID` / `LARK_APP_SECRET` | same as `encoder_monitor.env` |
-| `LARK_DOMAIN` | `https://open.larksuite.com` (Lark intl) — default, can omit |
-| `OPENAI_API_KEY` | the LLM key — a Groq `gsk_...` or OpenAI `sk-...` key |
-| `OPENAI_BASE` | **Groq:** `https://api.groq.com/openai/v1` · **OpenAI:** `https://api.openai.com/v1` |
-| `OPENAI_MODEL` | **Groq:** `llama-3.3-70b-versatile` · **OpenAI:** `gpt-4o-mini` |
-| `SYSTEM_PROMPT` | the bot's persona / instructions |
-| `ENCODER_USER` / `ENCODER_PASS` / `ENCODER_SCHEME` / `ENCODER_INPUT` | same as `encoder_monitor.env` — needed for the **check_encoder** tool |
-
-> The vars are named `OPENAI_*` but work for any OpenAI-compatible API (Groq included).
-
-### Tools (function calling)
-The bot can **actually act**, not just chat. When you say e.g. *"@bot check
-10.230.84.78"*, it calls the **`check_encoder`** tool, which reuses
-`encoder_monitor.py`'s `fetch_output()` / `parse_output_config()` to curl the
-encoder and report whether it's reachable + its TRTC/Agora config per output.
-This is why the `ENCODER_*` vars must be in `lark_ai_bot.env`.
+| `LARK_APP_ID` / `LARK_APP_SECRET` | same app as `encoder_monitor.env` |
+| `LARK_DOMAIN` | `https://open.larksuite.com` (default; Feishu = `open.feishu.cn`) |
+| `ENCODER_USER` / `ENCODER_PASS` / `ENCODER_SCHEME` / `ENCODER_INPUT` | same as `encoder_monitor.env` — needed to curl encoders for the commands |
+| `STATE_FILE` | path to `last_run.json` — defaults to `<repo>/last_run.json` (matches the monitor) |
+| `CHAT_MODE` | `commands` (default, command-only) or `llm` (also free-form chat) |
+| `REACTIONS` / `REACT_ACK` / `REACT_DONE` | `1` / `THUMBSUP` / `DONE` — the 👍 on-receive, ✅ on-done reactions |
+| `OPENAI_API_KEY` / `OPENAI_BASE` / `OPENAI_MODEL` | **only used when `CHAT_MODE=llm`.** Groq: `gsk_...` / `https://api.groq.com/openai/v1` / `llama-3.3-70b-versatile` |
+| `SYSTEM_PROMPT` | only used when `CHAT_MODE=llm`. **An env value here overrides the code default** — remove the line to use the code default. |
 
 ---
 
-## 2. One-time setup in the Lark Developer Console
+## 2. Lark Developer Console (one time)
 
 At <https://open.larksuite.com> → your app:
-
-1. **Events & Callbacks → Events:** subscription mode = **"Receive events through
-   persistent connection"** (no URL). Save, then **Add events →** `im.message.receive_v1`.
-2. **Permissions & Scopes — add:**
+1. **Events & Callbacks → Events:** mode = **"Receive events through persistent
+   connection"** (no URL). **Add event** `im.message.receive_v1`.
+2. **Permissions & Scopes** — add:
    - `im:message.group_at_msg:readonly` (hear @mentions in groups)
    - `im:message.p2p_msg:readonly` (hear DMs)
    - `im:message:send_as_bot` (reply)
-   - `im:message.reaction:write` (the 👀 "got it" / ✅ "done" reactions)
-3. **Version Management & Release → create & release a new version.** Nothing goes
-   live until released.
-4. Add the bot to the group(s) you want it in.
+   - `im:message.reaction:write` (the 👍 / ✅ reactions)
+3. **Enable the Bot feature**, add the bot to the **OTE group**.
+4. **Release a version** — nothing takes effect until released.
 
 ---
 
-## 3. Run it as a service (24/7)
+## 3. Run as a service (24/7)
 
 ```bash
 sudo cp /opt/curlencoder/lark-ai-bot.service /etc/systemd/system/
@@ -76,14 +83,15 @@ sudo systemctl enable --now lark-ai-bot
 
 ### Operate
 ```bash
-sudo systemctl status lark-ai-bot     # is it running?
+sudo systemctl status lark-ai-bot     # running?
 journalctl -u lark-ai-bot -f          # live logs
-sudo systemctl restart lark-ai-bot    # after editing lark_ai_bot.env or git pull
-sudo systemctl stop lark-ai-bot       # stop it
+sudo systemctl restart lark-ai-bot    # after git pull or editing lark_ai_bot.env
 ```
 
-After a `git pull` (new code) or editing `lark_ai_bot.env` (new key/model),
-**restart** the service for changes to take effect.
+> ⚠️ **`git pull` updates files; the running bot only loads them on RESTART.**
+> Always `sudo systemctl restart lark-ai-bot` after pulling bot changes — and kill
+> any stray manual `python lark_ai_bot.py` (`pkill -f lark_ai_bot.py`) so only the
+> systemd process answers.
 
 ---
 
@@ -91,9 +99,9 @@ After a `git pull` (new code) or editing `lark_ai_bot.env` (new key/model),
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| Commands do nothing / old behavior | Bot not restarted after `git pull`, or a stray manual process is answering. `pkill -f lark_ai_bot.py` then restart. |
 | `Incorrect domain name` on connect | `LARK_DOMAIN` must match the app's cluster (larksuite vs feishu). |
-| Connects fine but **no log when you @mention** | Event `im.message.receive_v1` not subscribed, scopes missing, or version not released. |
-| `LLM API HTTP 401 invalid_api_key` | Wrong/placeholder `OPENAI_API_KEY`. |
-| `LLM API HTTP 403: error code: 1010` | Cloudflare blocking the client signature — fixed by the User-Agent header in the code. If it persists, the server's IP/region is blocked; use OpenAI or a proxy. |
-| `LLM API HTTP 404 model_not_found` | `OPENAI_MODEL` isn't an exact model id. |
-| Hears you but never replies | Missing `im:message:send_as_bot` scope. |
+| Connects but **no log when you @mention** | Event `im.message.receive_v1` not subscribed, scope missing, or version not released. |
+| A reaction doesn't show (e.g. 👍) | That emoji key isn't valid on your tenant — try `THUMBSUP` / `OK` / `DONE`. |
+| `update` / `trtc` listing empty | Monitor hasn't written `last_run.json` with the new format yet — run the monitor once. |
+| `LLM API HTTP 401 / 403 1010 / 404` | (CHAT_MODE=llm only) bad key / Cloudflare block / wrong model id. |
