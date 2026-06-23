@@ -152,15 +152,33 @@ newport|BH6NsmhkOhwWB4tBQEdlK1IwgZf|0dPOFO|1Lpzfl|2MakKG|3DwzKp
 Get each tab id from its URL (`...?sheet=XXXX`), or run:
 `python3 encoder_monitor.py list-tabs <token>`.
 
-### 4. Test the monitor + schedule it
+### 4. Test the monitor + schedule the cron
+
+**a) Manual test first** (does exactly what cron will do):
 ```bash
 chmod +x run_monitor.sh
-./run_monitor.sh                          # manual test: card posts, sheets fill
-crontab -e                                # add (Tue + Thu 06:59):
-#   59 6 * * 2,4 /opt/curlencoder/run_monitor.sh >> /opt/curlencoder/monitor.log 2>&1
+./run_monitor.sh                          # card posts + PC/SDK sheets fill
 ```
-`run_monitor.sh` sources the env then runs the monitor — cron has no env of its own,
-so always schedule the **wrapper**, not the .py directly.
+
+**b) Add the cron — Tue + Thu 06:59** (one-liner, no editor; keeps existing jobs):
+```bash
+(crontab -l 2>/dev/null; echo "59 6 * * 2,4 /opt/curlencoder/run_monitor.sh >> /opt/curlencoder/monitor.log 2>&1") | crontab -
+```
+
+**c) Confirm + watch it fire:**
+```bash
+crontab -l                                # should list the 59 6 * * 2,4 line
+tail -f /opt/curlencoder/monitor.log      # log is created on the FIRST cron run
+```
+
+Notes:
+- Always schedule the **wrapper** `run_monitor.sh`, never the `.py` directly — cron
+  has no environment, and the wrapper sources `encoder_monitor.env` first.
+- `59 6 * * 2,4` = 06:59 every **Tue & Thu** (`min hr * * dow`; 2=Tue, 4=Thu). Server
+  is **CST (UTC+8 = PH time)** — confirm with `date`.
+- Other schedules: weekly Mon 07:00 = `0 7 * * 1`; daily 5:30 PM = `30 17 * * *`.
+- To edit by hand instead: `export EDITOR=nano; crontab -e`.
+- To remove the job: `crontab -l | grep -v run_monitor.sh | crontab -`.
 
 ### 5. Bot — venv, env, service
 ```bash
