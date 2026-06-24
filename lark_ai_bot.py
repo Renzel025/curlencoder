@@ -99,6 +99,11 @@ HISTORY_TURNS   = int(os.environ.get("HISTORY_TURNS", "12"))
 # is command-only to avoid the model hallucinating IPs / leaking tool syntax.
 CHAT_MODE       = os.environ.get("CHAT_MODE", "commands")
 
+# In group chats, only respond when THIS bot is specifically @mentioned — NOT on
+# @All (Lark delivers @All to the bot too). Matches the bot's display name; set
+# BOT_NAME in the env if the bot is renamed.
+BOT_NAME        = os.environ.get("BOT_NAME", "OTE-bot-encoder")
+
 # Written by encoder_monitor.py each run; the list_unreachable tool reads it so
 # the bot can re-check "the unreachable encoders". Must match the monitor's STATE_FILE.
 STATE_FILE      = os.environ.get(
@@ -737,6 +742,14 @@ def _strip_tool_leak(text):
     return out.strip()
 
 
+def _bot_specifically_mentioned(message):
+    """True if THIS bot is in the message's @mentions — ignores @All / others."""
+    for m in (getattr(message, "mentions", None) or []):
+        if (getattr(m, "name", "") or "").strip() == BOT_NAME:
+            return True
+    return False
+
+
 def _extract_text(message):
     """Get clean user text from a text message, dropping @mention placeholders."""
     try:
@@ -765,6 +778,11 @@ def on_message(data: P2ImMessageReceiveV1) -> None:
         age = 0
     if age > MAX_MSG_AGE_SEC:
         sys.stderr.write("[skip stale] message_id=%s age=%.0fs\n" % (message_id, age))
+        return
+
+    # in group chats, only answer when the bot is specifically @mentioned —
+    # ignore @All (Lark delivers @All to the bot too). DMs always respond.
+    if getattr(msg, "chat_type", "") == "group" and not _bot_specifically_mentioned(msg):
         return
 
     if msg.message_type != "text":
